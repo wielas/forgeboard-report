@@ -6,3 +6,7 @@ Append-only running notes. Formats:
 `HANDOFF: <exact state + next step>` · `RETRO-MARKER <date>`
 
 ---
+
+2026-07-29 CHUNK-1: Graph decoding rejects duplicate object keys and nonstandard
+JSON constants as schema errors; accepted records are normalized independently
+from the SHA-256 fingerprint of their exact source bytes.
