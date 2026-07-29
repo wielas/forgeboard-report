@@ -1,6 +1,6 @@
 # Forgeboard Report — Requirements
 
-**Status:** draft awaiting human sign-off · 2026-07-29
+**Status:** signed off by human · 2026-07-29
 
 ## Mission
 
