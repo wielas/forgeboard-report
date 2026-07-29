@@ -1,6 +1,6 @@
 # ADR-0005: Use event time and strict causality
 
-**Status:** proposed · 2026-07-29
+**Status:** accepted · 2026-07-29
 
 ## Context
 

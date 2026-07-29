@@ -1,6 +1,6 @@
 # ADR-0001: Capture Hermes as a read-only SQLite snapshot
 
-**Status:** proposed · 2026-07-29
+**Status:** accepted · 2026-07-29
 
 ## Context
 

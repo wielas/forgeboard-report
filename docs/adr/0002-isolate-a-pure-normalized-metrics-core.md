@@ -1,6 +1,6 @@
 # ADR-0002: Isolate a pure normalized metrics core
 
-**Status:** proposed · 2026-07-29
+**Status:** accepted · 2026-07-29
 
 ## Context
 

@@ -1,6 +1,6 @@
 # ADR-0004: Query PR state through batched GitHub CLI GraphQL reads
 
-**Status:** proposed · 2026-07-29
+**Status:** accepted · 2026-07-29
 
 ## Context
 

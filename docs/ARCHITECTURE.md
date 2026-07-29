@@ -1,6 +1,6 @@
 # Forgeboard Report — Architecture
 
-**Status:** proposed for human sign-off · 2026-07-29
+**Status:** signed off · 2026-07-29
 
 **Governing requirements:** `docs/REQUIREMENTS.md`, signed off 2026-07-29
 

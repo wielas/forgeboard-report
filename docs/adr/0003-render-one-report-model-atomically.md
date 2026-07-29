@@ -1,6 +1,6 @@
 # ADR-0003: Render one report model atomically
 
-**Status:** proposed · 2026-07-29
+**Status:** accepted · 2026-07-29
 
 ## Context
 

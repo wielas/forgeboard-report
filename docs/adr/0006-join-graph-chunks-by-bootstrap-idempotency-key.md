@@ -1,6 +1,6 @@
 # ADR-0006: Join graph chunks by bootstrap idempotency key
 
-**Status:** proposed · 2026-07-29
+**Status:** accepted · 2026-07-29
 
 ## Context
 
