@@ -182,7 +182,7 @@ def normalize_sources(
     )
     links = _normalize_links(raw_hermes, chunk_by_task)
     verdicts = _normalize_verdicts(runs, decoded_by_run)
-    handoffs = _normalize_handoffs(runs, decoded_by_run)
+    handoffs = _normalize_handoffs(runs, events, decoded_by_run)
     blocks = _normalize_blocks(
         cards_by_task,
         mapped_runs,
@@ -397,10 +397,22 @@ def _normalize_verdicts(
 
 def _normalize_handoffs(
     runs: tuple[NormalizedRun, ...],
+    events: tuple[NormalizedEvent, ...],
     decoded_by_run: dict[int, _DecodedMetadata],
 ) -> tuple[ChunkHandoff, ...]:
+    completed_run_keys = {
+        (event.task_id, event.run_id)
+        for event in events
+        if event.kind == "completed" and event.run_id is not None
+    }
     handoffs: list[ChunkHandoff] = []
     for run in runs:
+        if (
+            run.status != "done"
+            or run.outcome != "completed"
+            or (run.task_id, run.id) not in completed_run_keys
+        ):
+            continue
         decoded = decoded_by_run.get(run.id)
         if not isinstance(decoded, _DecodedChunk):
             continue
@@ -712,19 +724,21 @@ def _decode_metadata(
 
 
 def _decode_judge(value: dict[str, Any], evidence_id: str) -> _DecodedJudge:
-    _require_exact_keys(value, {"schema", "outcome", "scores"}, evidence_id, _JUDGE_SCHEMA)
-    outcome_value = value["outcome"]
-    try:
-        outcome = JudgeOutcome(outcome_value)
-    except (TypeError, ValueError) as error:
+    _require_keys(value, {"schema", "verdict", "scores"}, evidence_id, _JUDGE_SCHEMA)
+    verdict = value["verdict"]
+    if verdict == "bounce":
+        outcome = JudgeOutcome.BOUNCE
+    elif verdict in {"approve", "approve-with-nits"}:
+        outcome = JudgeOutcome.PASS
+    else:
         raise InvalidSchemaError(
             evidence_id,
-            "forge.judge.v1 outcome must be exactly 'pass' or 'bounce'",
-        ) from error
+            "forge.judge.v1 verdict must be exactly 'approve', 'approve-with-nits', or 'bounce'",
+        )
     scores = value["scores"]
     if not isinstance(scores, dict):
         raise InvalidSchemaError(evidence_id, "forge.judge.v1 scores must be an object")
-    _require_exact_keys(scores, set(_SCORE_NAMES), evidence_id, "forge.judge.v1 scores")
+    _require_keys(scores, set(_SCORE_NAMES), evidence_id, "forge.judge.v1 scores")
     decoded_scores = {
         name: _finite_decimal(scores[name], evidence_id, name) for name in _SCORE_NAMES
     }
@@ -735,7 +749,7 @@ def _decode_judge(value: dict[str, Any], evidence_id: str) -> _DecodedJudge:
 
 
 def _decode_block(value: dict[str, Any], evidence_id: str) -> _DecodedBlock:
-    _require_exact_keys(value, {"schema", "reason_class"}, evidence_id, _BLOCK_SCHEMA)
+    _require_keys(value, {"schema", "reason_class"}, evidence_id, _BLOCK_SCHEMA)
     reason_class = value["reason_class"]
     if not isinstance(reason_class, str) or not reason_class:
         raise InvalidSchemaError(
@@ -746,7 +760,7 @@ def _decode_block(value: dict[str, Any], evidence_id: str) -> _DecodedBlock:
 
 
 def _decode_chunk(value: dict[str, Any], evidence_id: str) -> _DecodedChunk:
-    _require_exact_keys(value, {"schema", "chunk_id", "pr"}, evidence_id, _CHUNK_SCHEMA)
+    _require_keys(value, {"schema", "chunk_id", "pr"}, evidence_id, _CHUNK_SCHEMA)
     chunk_id = value["chunk_id"]
     pr = value["pr"]
     if not isinstance(chunk_id, str) or not chunk_id:
@@ -769,22 +783,16 @@ _DECODERS: dict[str, _Decoder] = {
 }
 
 
-def _require_exact_keys(
+def _require_keys(
     value: dict[str, Any],
-    expected: set[str],
+    required: set[str],
     evidence_id: str,
     label: str,
 ) -> None:
     keys = set(value)
-    if keys != expected:
-        missing = sorted(expected - keys)
-        unknown = sorted(keys - expected)
-        details: list[str] = []
-        if missing:
-            details.append(f"missing keys {missing}")
-        if unknown:
-            details.append(f"unknown keys {unknown}")
-        raise InvalidSchemaError(evidence_id, f"{label} has {' and '.join(details)}")
+    missing = sorted(required - keys)
+    if missing:
+        raise InvalidSchemaError(evidence_id, f"{label} has missing keys {missing}")
 
 
 def _finite_decimal(value: Any, evidence_id: str, name: str) -> Decimal:

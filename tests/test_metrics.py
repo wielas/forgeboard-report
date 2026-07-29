@@ -1,5 +1,6 @@
 """Focused tests for canonical normalization and the pure lifecycle core."""
 
+import json
 from dataclasses import FrozenInstanceError, replace
 from datetime import datetime
 from decimal import Decimal, localcontext
@@ -25,6 +26,7 @@ from forgeboard_report.domain import (
     ActorClass,
     Availability,
     EvidenceRole,
+    JudgeOutcome,
     RawHermesLink,
 )
 from forgeboard_report.errors import InvalidCoreError, InvalidSchemaError
@@ -145,34 +147,43 @@ def test_timestamp_inputs_normalize_to_utc_and_block_run_end_is_fallback() -> No
 @pytest.mark.parametrize(
     ("metadata", "message"),
     [
-        ('{"schema":"forge.judge.v1","outcome":"pass"}', "missing keys"),
         (
-            '{"schema":"forge.judge.v1","outcome":"pass","scores":{},"extra":1}',
-            "unknown keys",
-        ),
-        (
-            '{"schema":"forge.judge.v1","outcome":"approve","scores":'
+            '{"schema":"forge.judge.v1","scores":'
             '{"spec_fidelity":"1","scenario_integrity":"2",'
             '"architectural_conformance":"3"}}',
-            "outcome",
-        ),
-        (
-            '{"schema":"forge.judge.v1","outcome":"pass","scores":[]}',
-            "scores must be an object",
-        ),
-        (
-            '{"schema":"forge.judge.v1","outcome":"pass","scores":'
-            '{"spec_fidelity":"1","scenario_integrity":"2"}}',
             "missing keys",
         ),
         (
-            '{"schema":"forge.judge.v1","outcome":"pass","scores":'
+            '{"schema":"forge.judge.v1","verdict":"pass","scores":'
+            '{"spec_fidelity":"1","scenario_integrity":"2",'
+            '"architectural_conformance":"3"}}',
+            "verdict",
+        ),
+        (
+            '{"schema":"forge.judge.v1","verdict":"APPROVE","scores":'
+            '{"spec_fidelity":"1","scenario_integrity":"2",'
+            '"architectural_conformance":"3"}}',
+            "verdict",
+        ),
+        (
+            '{"schema":"forge.judge.v1","verdict":"approve","scores":[]}',
+            "scores must be an object",
+        ),
+        (
+            '{"schema":"forge.judge.v1","verdict":"approve","scores":'
+            '{"scenario_integrity":"2","architectural_conformance":"3",'
+            '"scope_discipline":"3","debt_honesty":"2",'
+            '"doc_reconciliation":"2"}}',
+            "missing keys",
+        ),
+        (
+            '{"schema":"forge.judge.v1","verdict":"approve","scores":'
             '{"spec_fidelity":"NaN","scenario_integrity":"2",'
             '"architectural_conformance":"3"}}',
             "finite Decimal",
         ),
         (
-            '{"schema":"forge.judge.v1","outcome":"pass","scores":'
+            '{"schema":"forge.judge.v1","verdict":"approve","scores":'
             '{"spec_fidelity":true,"scenario_integrity":"2",'
             '"architectural_conformance":"3"}}',
             "finite Decimal",
@@ -195,29 +206,169 @@ def test_declared_malformed_envelopes_fail_schema_validation(
         )
 
 
+@pytest.mark.parametrize(
+    ("verdict", "expected"),
+    [
+        ("approve", JudgeOutcome.PASS),
+        ("approve-with-nits", JudgeOutcome.PASS),
+        ("bounce", JudgeOutcome.BOUNCE),
+    ],
+)
+def test_declared_valid_judge_envelopes_map_rubric_verdicts(
+    verdict: str,
+    expected: JudgeOutcome,
+) -> None:
+    snapshot = normalize_fixture(
+        ("A",),
+        runs=(
+            run(
+                1,
+                "A",
+                ended_at=at(20),
+                metadata=judge_metadata(verdict),
+            ),
+        ),
+    )
+
+    assert snapshot.verdicts[0].outcome is expected
+
+
 def test_numeric_decimal_scores_and_complete_chunk_handoffs_decode() -> None:
     numeric_scores = (
-        '{"schema":"forge.judge.v1","outcome":"pass","scores":'
+        '{"schema":"forge.judge.v1","verdict":"approve","scores":'
         '{"spec_fidelity":1,"scenario_integrity":2.5,'
-        '"architectural_conformance":3}}'
+        '"architectural_conformance":3,"scope_discipline":3,'
+        '"debt_honesty":2,"doc_reconciliation":2}}'
     )
     snapshot = normalize_fixture(
         ("A",),
+        cards=(card("A", completed_at=at(21)),),
         runs=(
             run(1, "A", ended_at=at(20), metadata=numeric_scores),
             run(2, "A", ended_at=at(21), metadata=chunk_metadata("A")),
         ),
+        events=(event(1, "A", "completed", at(21), run_id=2),),
     )
 
     assert snapshot.verdicts[0].scores.scenario_integrity == Decimal("2.5")
     assert snapshot.handoffs[0].pr == "https://github.com/acme/repo/pull/1"
 
 
+def test_full_rubric_judge_envelope_decodes_report_dimensions() -> None:
+    metadata = json.dumps(
+        {
+            "schema": "forge.judge.v1",
+            "chunk_id": "CHUNK-3",
+            "pr": "https://github.com/acme/repo/pull/4",
+            "verdict": "approve-with-nits",
+            "scores": {
+                "spec_fidelity": 3,
+                "scenario_integrity": 2,
+                "architectural_conformance": 3,
+                "scope_discipline": 3,
+                "debt_honesty": 2,
+                "doc_reconciliation": 2,
+            },
+            "findings": [
+                {
+                    "dimension": "scenario_integrity",
+                    "severity": "nit",
+                    "evidence": "tests/test_metrics.py: full envelope",
+                    "action": "Keep the regression envelope complete.",
+                }
+            ],
+            "nits_as_cards": ["CARD?: preserve additive judge metadata"],
+            "spot_check_suggestion": "Inspect normalize.py decoder dispatch.",
+            "judge_model": "fixture-judge",
+            "tokens_estimate": 1234,
+        }
+    )
+
+    snapshot = normalize_fixture(
+        ("A",),
+        runs=(run(1, "A", ended_at=at(20), metadata=metadata),),
+    )
+    verdict = snapshot.verdicts[0]
+
+    assert verdict.outcome is JudgeOutcome.PASS
+    assert verdict.scores.spec_fidelity == Decimal("3")
+    assert verdict.scores.scenario_integrity == Decimal("2")
+    assert verdict.scores.architectural_conformance == Decimal("3")
+
+
+def test_additive_block_and_chunk_envelopes_decode() -> None:
+    block = json.dumps(
+        {
+            "schema": "forge.block.v1",
+            "chunk_id": "A",
+            "reason_class": "failing-prereq",
+            "reason": "Parent PR is not merged.",
+            "needs": ["merged parent"],
+            "state": "blocked",
+        }
+    )
+    handoff = json.dumps(
+        {
+            "schema": "forge.chunk.v1",
+            "chunk_id": "A",
+            "pr": "https://github.com/acme/repo/pull/2",
+            "project": "forgeboard-report",
+            "branch": "chunk/3-lifecycle-metrics",
+            "lane": "forge-codex-lane",
+            "scenarios": ["metadata envelopes decode"],
+            "check": {"status": "green"},
+        }
+    )
+    snapshot = normalize_fixture(
+        ("A",),
+        cards=(card("A", completed_at=at(21)),),
+        runs=(
+            run(
+                1,
+                "A",
+                status="blocked",
+                outcome="blocked",
+                ended_at=at(20),
+                metadata=block,
+            ),
+            run(2, "A", ended_at=at(21), metadata=handoff),
+        ),
+        events=(
+            event(1, "A", "blocked", at(20), run_id=1),
+            event(2, "A", "completed", at(21), run_id=2),
+        ),
+    )
+
+    assert snapshot.blocks[0].reason_class == "failing-prereq"
+    assert snapshot.handoffs[0].pr == "https://github.com/acme/repo/pull/2"
+
+
+def test_chunk_handoff_comes_only_from_completion_event_run() -> None:
+    snapshot = normalize_fixture(
+        ("A",),
+        cards=(card("A", completed_at=at(30)),),
+        runs=(
+            run(1, "A", ended_at=at(20), metadata=chunk_metadata("B")),
+            run(
+                2,
+                "A",
+                ended_at=at(30),
+                metadata=chunk_metadata("A", "https://github.com/acme/repo/pull/2"),
+            ),
+        ),
+        events=(event(1, "A", "completed", at(30), run_id=2),),
+    )
+
+    assert tuple(handoff.run_id for handoff in snapshot.handoffs) == (2,)
+
+
 def test_chunk_handoff_id_mismatch_and_unfinished_judge_fail_core_validation() -> None:
     with pytest.raises(InvalidCoreError, match="does not match mapped chunk"):
         normalize_fixture(
             ("A",),
+            cards=(card("A", completed_at=at(20)),),
             runs=(run(1, "A", ended_at=at(20), metadata=chunk_metadata("B")),),
+            events=(event(1, "A", "completed", at(20), run_id=1),),
         )
     with pytest.raises(InvalidCoreError, match="finished run ended_at"):
         normalize_fixture(

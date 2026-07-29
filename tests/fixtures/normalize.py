@@ -32,19 +32,29 @@ def at(minutes: int) -> datetime:
 
 
 def judge_metadata(
-    outcome: str = "pass",
+    verdict: str = "approve",
     scores: tuple[str, str, str] = ("9", "8", "7"),
 ) -> str:
-    """Build one exact judge envelope using lossless decimal strings."""
+    """Build one complete rubric judge envelope using lossless decimal strings."""
     return json.dumps(
         {
             "schema": "forge.judge.v1",
-            "outcome": outcome,
+            "chunk_id": "CHUNK-3",
+            "pr": "https://github.com/acme/repo/pull/3",
+            "verdict": verdict,
             "scores": {
                 "spec_fidelity": scores[0],
                 "scenario_integrity": scores[1],
                 "architectural_conformance": scores[2],
+                "scope_discipline": "3",
+                "debt_honesty": "2",
+                "doc_reconciliation": "2",
             },
+            "findings": [],
+            "nits_as_cards": [],
+            "spot_check_suggestion": "Inspect the densest changed normalization path.",
+            "judge_model": "fixture-judge",
+            "tokens_estimate": 0,
         },
         separators=(",", ":"),
     )
@@ -257,14 +267,24 @@ def multiple_verdict_snapshot() -> SourceSnapshot:
         ("A", "B"),
         cards=(card("A", completed_at=at(40)), card("B", completed_at=at(41))),
         runs=(
-            run(1, "A", ended_at=at(20), metadata=judge_metadata("pass", ("9", "2", "1"))),
+            run(
+                1,
+                "A",
+                ended_at=at(20),
+                metadata=judge_metadata("approve", ("9", "2", "1")),
+            ),
             run(
                 2,
                 "A",
                 ended_at=at(30),
                 metadata=judge_metadata("bounce", ("3", "4", "5")),
             ),
-            run(3, "B", ended_at=at(35), metadata=judge_metadata("pass", ("6", "9", "9"))),
+            run(
+                3,
+                "B",
+                ended_at=at(35),
+                metadata=judge_metadata("approve", ("6", "9", "9")),
+            ),
         ),
     )
 
@@ -396,7 +416,7 @@ def boundary_snapshot() -> SourceSnapshot:
                 40,
                 "LOWER",
                 ended_at=at(10),
-                metadata=judge_metadata("pass", ("1", "2", "3")),
+                metadata=judge_metadata("approve", ("1", "2", "3")),
             ),
             run(
                 41,
