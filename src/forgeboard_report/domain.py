@@ -50,6 +50,96 @@ class GraphSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceFileFingerprint:
+    """Exact-byte evidence for one member of a multi-file source."""
+
+    name: str
+    size: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class RawHermesCard:
+    """One uninterpreted Hermes 0.19 task row."""
+
+    id: str
+    title: str
+    body: str | None
+    assignee: str | None
+    status: str
+    priority: int
+    created_by: str | None
+    created_at: object
+    started_at: object | None
+    completed_at: object | None
+    result: str | None
+    idempotency_key: str | None
+    block_kind: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RawHermesLink:
+    """One parent-to-child row using opaque Hermes task ids."""
+
+    parent_id: str
+    child_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class RawHermesRun:
+    """One uninterpreted Hermes 0.19 attempt row."""
+
+    id: int
+    task_id: str
+    profile: str | None
+    step_key: str | None
+    status: str
+    outcome: str | None
+    started_at: object
+    ended_at: object | None
+    summary: str | None
+    metadata: str | bytes | None
+    error: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RawHermesEvent:
+    """One uninterpreted Hermes 0.19 lifecycle event."""
+
+    id: int
+    task_id: str
+    run_id: int | None
+    kind: str
+    payload: str | bytes | None
+    created_at: object
+
+
+@dataclass(frozen=True, slots=True)
+class RawHermesComment:
+    """One uninterpreted Hermes 0.19 comment."""
+
+    id: int
+    task_id: str
+    author: str
+    body: str
+    created_at: object
+
+
+@dataclass(frozen=True, slots=True)
+class RawHermesSnapshot:
+    """Stable raw rows extracted from one private Hermes file snapshot."""
+
+    board_slug: str
+    cards: tuple[RawHermesCard, ...]
+    links: tuple[RawHermesLink, ...]
+    runs: tuple[RawHermesRun, ...]
+    events: tuple[RawHermesEvent, ...]
+    comments: tuple[RawHermesComment, ...]
+    fingerprint: SourceFingerprint
+    source_files: tuple[SourceFileFingerprint, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ReportRequest:
     """Validated and resolved operator inputs for one report."""
 
