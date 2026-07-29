@@ -33,7 +33,7 @@ def at(minutes: int) -> datetime:
 
 def judge_metadata(
     verdict: str = "approve",
-    scores: tuple[str, str, str] = ("9", "8", "7"),
+    scores: tuple[str, str, str] = ("2", "3", "1"),
 ) -> str:
     """Build one complete rubric judge envelope using lossless decimal strings."""
     return json.dumps(
@@ -271,19 +271,19 @@ def multiple_verdict_snapshot() -> SourceSnapshot:
                 1,
                 "A",
                 ended_at=at(20),
-                metadata=judge_metadata("approve", ("9", "2", "1")),
+                metadata=judge_metadata("approve", ("2", "1", "2")),
             ),
             run(
                 2,
                 "A",
                 ended_at=at(30),
-                metadata=judge_metadata("bounce", ("3", "4", "5")),
+                metadata=judge_metadata("bounce", ("3", "2", "1")),
             ),
             run(
                 3,
                 "B",
                 ended_at=at(35),
-                metadata=judge_metadata("approve", ("6", "9", "9")),
+                metadata=judge_metadata("approve", ("2", "3", "2")),
             ),
         ),
     )
@@ -422,7 +422,7 @@ def boundary_snapshot() -> SourceSnapshot:
                 41,
                 "UPPER",
                 ended_at=at(50),
-                metadata=judge_metadata("bounce", ("9", "9", "9")),
+                metadata=judge_metadata("bounce", ("3", "3", "3")),
             ),
             run(
                 42,

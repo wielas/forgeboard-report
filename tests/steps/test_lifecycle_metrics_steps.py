@@ -51,10 +51,10 @@ def assert_bounce_evidence(lifecycle_case) -> None:
 @then("each score dimension has its own exact Decimal mean")
 def assert_dimension_means(lifecycle_case) -> None:
     quality = lifecycle_case["results"][0].quality
-    assert quality.spec_fidelity.mean == Decimal("6")
-    assert quality.scenario_integrity.mean == Decimal("5")
-    assert quality.architectural_conformance.mean == Decimal("5")
-    assert quality.scenario_integrity.total == Decimal("15")
+    assert quality.spec_fidelity.mean == Decimal("2.333333333333333333333333333")
+    assert quality.scenario_integrity.mean == Decimal("2")
+    assert quality.architectural_conformance.mean == Decimal("1.666666666666666666666666667")
+    assert quality.scenario_integrity.total == Decimal("6")
     assert quality.scenario_integrity.count == 3
 
 

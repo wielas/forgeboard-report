@@ -818,6 +818,11 @@ def _finite_decimal(value: Any, evidence_id: str, name: str) -> Decimal:
             evidence_id,
             f"forge.judge.v1 score {name!r} must be a finite Decimal",
         )
+    if not Decimal(0) <= result <= Decimal(3):
+        raise InvalidSchemaError(
+            evidence_id,
+            f"forge.judge.v1 score {name!r} must be in 0-3 range",
+        )
     return result
 
 

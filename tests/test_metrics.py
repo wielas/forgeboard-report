@@ -207,6 +207,38 @@ def test_declared_malformed_envelopes_fail_schema_validation(
 
 
 @pytest.mark.parametrize(
+    ("score", "message"),
+    [
+        ("-1", "0-3 range"),
+        ("4", "0-3 range"),
+        ("3.5", "0-3 range"),
+        ("Infinity", "finite Decimal"),
+        ("-Infinity", "finite Decimal"),
+        ("NaN", "finite Decimal"),
+    ],
+)
+def test_judge_scores_reject_values_outside_the_finite_zero_to_three_range(
+    score: str,
+    message: str,
+) -> None:
+    metadata = json.loads(judge_metadata())
+    metadata["scores"]["spec_fidelity"] = score
+
+    with pytest.raises(InvalidSchemaError, match=message):
+        normalize_fixture(
+            ("A",),
+            runs=(
+                run(
+                    1,
+                    "A",
+                    ended_at=at(20),
+                    metadata=json.dumps(metadata),
+                ),
+            ),
+        )
+
+
+@pytest.mark.parametrize(
     ("verdict", "expected"),
     [
         ("approve", JudgeOutcome.PASS),
@@ -236,7 +268,7 @@ def test_declared_valid_judge_envelopes_map_rubric_verdicts(
 def test_numeric_decimal_scores_and_complete_chunk_handoffs_decode() -> None:
     numeric_scores = (
         '{"schema":"forge.judge.v1","verdict":"approve","scores":'
-        '{"spec_fidelity":1,"scenario_integrity":2.5,'
+        '{"spec_fidelity":0,"scenario_integrity":2.5,'
         '"architectural_conformance":3,"scope_discipline":3,'
         '"debt_honesty":2,"doc_reconciliation":2}}'
     )
@@ -250,7 +282,9 @@ def test_numeric_decimal_scores_and_complete_chunk_handoffs_decode() -> None:
         events=(event(1, "A", "completed", at(21), run_id=2),),
     )
 
+    assert snapshot.verdicts[0].scores.spec_fidelity == Decimal("0")
     assert snapshot.verdicts[0].scores.scenario_integrity == Decimal("2.5")
+    assert snapshot.verdicts[0].scores.architectural_conformance == Decimal("3")
     assert snapshot.handoffs[0].pr == "https://github.com/acme/repo/pull/1"
 
 
@@ -596,7 +630,7 @@ def test_quality_includes_in_period_verdict_without_card_completion() -> None:
                 1,
                 "A",
                 ended_at=at(20),
-                metadata=judge_metadata("bounce", ("4", "5", "6")),
+                metadata=judge_metadata("bounce", ("1", "2", "1")),
             ),
         ),
     )
@@ -604,7 +638,7 @@ def test_quality_includes_in_period_verdict_without_card_completion() -> None:
 
     assert metrics.bounce.status is Availability.UNAVAILABLE
     assert metrics.bounce.verdicts == ()
-    assert metrics.quality.spec_fidelity.mean == Decimal("4")
+    assert metrics.quality.spec_fidelity.mean == Decimal("1")
 
 
 def test_decimal_division_is_independent_of_the_callers_decimal_context() -> None:
