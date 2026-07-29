@@ -337,8 +337,9 @@ def test_additive_block_and_chunk_envelopes_decode() -> None:
             "chunk_id": "A",
             "reason_class": "failing-prereq",
             "reason": "Parent PR is not merged.",
-            "needs": ["merged parent"],
+            "needs": "human decision: merged parent PR",
             "state": "blocked",
+            "unknown_example": "accepted",
         }
     )
     handoff = json.dumps(
@@ -349,8 +350,21 @@ def test_additive_block_and_chunk_envelopes_decode() -> None:
             "project": "forgeboard-report",
             "branch": "chunk/3-lifecycle-metrics",
             "lane": "forge-codex-lane",
-            "scenarios": ["metadata envelopes decode"],
-            "check": {"status": "green"},
+            "scenarios": {
+                "added": 1,
+                "passing": 1,
+                "feature_files": ["tests/features/lifecycle_metrics.feature"],
+            },
+            "check": {"green": True, "coverage_pct": 95.41},
+            "files_changed": 8,
+            "lines_changed": 312,
+            "decisions": ["Decode canonical metadata with additive compatibility."],
+            "debt": [],
+            "card_proposals": [],
+            "docs_reconciled": ["docs/chunks/CHUNK-3.md", "docs/ROADMAP.md"],
+            "duration_min": 23,
+            "worker": "codex/gpt-5",
+            "unknown_example": "accepted",
         }
     )
     snapshot = normalize_fixture(
