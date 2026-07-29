@@ -1,0 +1,42 @@
+[
+  {
+    "id": "CHUNK-1",
+    "lane": "forge-codex-lane",
+    "depends_on": []
+  },
+  {
+    "id": "CHUNK-2",
+    "lane": "forge-codex-lane",
+    "depends_on": [
+      "CHUNK-1"
+    ]
+  },
+  {
+    "id": "CHUNK-3",
+    "lane": "forge-codex-lane",
+    "depends_on": [
+      "CHUNK-2"
+    ]
+  },
+  {
+    "id": "CHUNK-4",
+    "lane": "forge-codex-lane",
+    "depends_on": [
+      "CHUNK-3"
+    ]
+  },
+  {
+    "id": "CHUNK-5",
+    "lane": "forge-codex-lane",
+    "depends_on": [
+      "CHUNK-4"
+    ]
+  },
+  {
+    "id": "CHUNK-6",
+    "lane": "forge-codex-lane",
+    "depends_on": [
+      "CHUNK-5"
+    ]
+  }
+]

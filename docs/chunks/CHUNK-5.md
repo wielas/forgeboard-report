@@ -1,0 +1,22 @@
+### CHUNK-5: Render and atomically publish the canonical report
+- **Goal:** Build one immutable `forgeboard.report.v1` model and deterministically render and atomically publish its JSON and paste-ready Markdown projections.
+- **Milestone:** M3  ·  **Depends on:** `CHUNK-4`
+- **Serves:** `FR-1`, `FR-2`, `FR-3`, `FR-4`, `FR-5`, `FR-6`, `FR-7`, `FR-8`, `FR-9`, `NFR-1`, `NFR-2`, `NFR-5`  ·  **Relevant ADRs:** `0002`, `0003`, `0005`
+- **Touches:** `src/forgeboard_report/domain.py`, `src/forgeboard_report/render.py`, `src/forgeboard_report/publish.py`, `tests/features/report_output.feature`, `tests/steps/test_report_output_steps.py`, `tests/test_render.py`
+- **Contract decisions:**
+  - Assemble exactly one immutable Report; renderers may project it but may not recalculate or parse one another. JSON top-level field order is `schema_version`, `inputs`, `sources`, `metrics`, `dependency_audit`, `warnings`, `evidence`; `schema_version` is exactly `forgeboard.report.v1`.
+  - Within `metrics`, emit `bounce_rate`, `judge_quality`, `blocked_work`, and `operator_intervention` in that order. Preserve numerator/denominator and sum/count alongside displayed values, raw contributions, unavailable status, warnings, and evidence references. Decimal display values are canonical JSON number lexemes rounded once to at most six fractional digits using half-even with trailing fractional zeroes removed; unavailable values are JSON null.
+  - Use UTF-8, LF, one final newline, schema field order, and the Architecture sort keys for every list. Escape arbitrary source text safely. Exclude output path, current time, temp paths, pid, locale, timezone, hash iteration, and diagnostics from both artifacts.
+  - Markdown section order is title/schema, Resolved inputs, Canonical metrics, Operator intervention, Dependency audit, Warnings and unclassified evidence, then Evidence index. It must show unavailable explicitly and carry the same values and stable ids as JSON; it is paste-ready and contains no generated-at clock.
+  - Require a nonexistent destination whose parent already exists. Finish validation and both renders in memory, create a private sibling staging directory, write and flush exactly `report.json` and `report.md`, then rename the directory into place. On failure, best-effort remove only that private staging directory and never touch sources or create a plausible destination.
+  - Use specific publication errors for write, flush, and rename failures. Existing destination is a usage error; renderer/schema defects are invalid-core errors. Boundary diagnostics are not report content.
+- **Scenarios:**
+  - Given one report containing all metric, dependency, warning, unavailable, and evidence variants, when rendered, then JSON has the exact v1 field order and Markdown has the fixed section order with matching values and stable ids.
+  - Given repeating decimals, finite raw scores, a zero denominator, and an empty score set, when rendered, then half-even rounding occurs once at six places, trailing zeroes are removed, and unavailable values are explicit/null rather than zero.
+  - Given identical reports with shuffled source insertion under different locale, timezone, and hash-seed conditions, when rendered repeatedly, then JSON and Markdown bytes are identical UTF-8/LF with one final newline.
+  - Given a valid report and a new destination, when published, then the destination appears atomically and contains exactly complete `report.json` and `report.md` files while all input/planning bytes remain unchanged.
+  - Given an existing destination or injected render, write, flush, or rename failure, when publication is attempted, then a specific error is raised, no plausible destination is emitted, and only the private staging directory is eligible for cleanup.
+- **Out of scope:** CLI argument parsing/orchestration, source acquisition, metric changes, stdout multiplexing, two arbitrary output paths, editing retro/planning documents, and persistent caches or logs.
+- **Done when:** `make check` is green; rendering, byte-determinism, escaping, atomic-success, and every injected-failure scenario pass; JSON and Markdown are proven projections of one model; the coverage floor holds and no signed input changes.
+- **Integration gate:** Do not start until CHUNK-4 is merged to `main`; branch from that merged state, never stack on its open PR, and preserve all adapter and metric tests when handing a green main to CHUNK-6.
+- **Lane:** forge-codex-lane  ·  **Risk:** med

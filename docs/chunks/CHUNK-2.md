@@ -1,0 +1,20 @@
+### CHUNK-2: Capture a stable read-only Hermes snapshot
+- **Goal:** Acquire one internally coherent Hermes 0.19 board snapshot through read-only file handles while preserving every stable row id required downstream.
+- **Milestone:** M1  ·  **Depends on:** `CHUNK-1`
+- **Serves:** `FR-1`, `FR-2`, `FR-3`, `FR-4`, `FR-5`, `FR-6`, `FR-7`, `FR-9`, `NFR-1`, `NFR-3`, `NFR-4`, `NFR-5`  ·  **Relevant ADRs:** `0001`, `0002`, `0005`, `0006`
+- **Touches:** `src/forgeboard_report/domain.py`, `src/forgeboard_report/hermes.py`, `tests/features/hermes_snapshot.feature`, `tests/steps/test_hermes_snapshot_steps.py`, `tests/fixtures/hermes_019.py`, `tests/test_hermes.py`
+- **Contract decisions:**
+  - Keep Hermes compatibility behind a `Hermes019Layout` resolver and inject it into the adapter. The production resolver honors `HERMES_KANBAN_HOME` before the standard Hermes root, confines the validated slug to that root, and rejects missing, escaping, or symlink-escaping database paths; it never invokes `hermes kanban`.
+  - A capture attempt fingerprints the main SQLite file and the current `-wal` or `-journal` sidecar set, copies each through binary read-only handles into a private temporary directory, fingerprints the same source membership and bytes again, and accepts only an exact match. Retry at most three total attempts; exhaustion is a source-inconsistent error.
+  - Open only the private copy with stdlib `sqlite3`, start one read transaction there, validate the Hermes 0.19 tables/columns needed for the Architecture data model, and extract board cards, parent links, runs, events, and comments including opaque task ids and stable row ids. Never open the live database through SQLite.
+  - The raw adapter preserves exact stored timestamps, payload/metadata bytes or decoded JSON values plus their source ids, task idempotency keys across every status including archived, and source fingerprints/version. Timestamp and canonical-schema interpretation remain the normalizer's job.
+  - The 0.19 fixture builder must create opaque `t_*` task ids, exact bootstrap idempotency keys, archived rows, links, run metadata, events, comments, and journal/change-during-copy cases. Pair its representative rows with recorded public `show --json` values only as a compatibility oracle; ordinary tests require no Hermes executable.
+- **Scenarios:**
+  - Given a stable Hermes 0.19 database and sidecar set, when the board is captured, then the private snapshot contains all required rows and stable ids, agrees with the recorded public JSON values, and the live source bytes are unchanged.
+  - Given source membership or bytes change during capture, when three attempts cannot obtain identical before/after fingerprints, then capture fails as inconsistent and exposes no partial raw snapshot.
+  - Given a graph card key that exists only on an archived task plus unrelated opaque task ids, when rows are captured, then all rows are preserved without title/body searching or graph-id-to-task-id substitution.
+  - Given an unknown board, confined-path violation, missing database, or incompatible required 0.19 column, when capture is attempted, then a specific actionable source or schema error is raised without creating files under the live Hermes root.
+- **Out of scope:** Graph-to-card cardinality enforcement, canonical metadata decoding, GitHub calls, metrics, renderers, publication, and use of mutating Hermes JSON commands.
+- **Done when:** `make check` is green; the listed snapshot, compatibility, mutation, and bounded-retry scenarios pass; fixtures work without Hermes installed; changed code stays within the six listed paths; implementation docs are reconciled without altering signed inputs.
+- **Integration gate:** Do not start until CHUNK-1 is merged to `main`; branch from that merged state, never from CHUNK-1's unmerged branch, and leave `make check` green for CHUNK-3.
+- **Lane:** forge-codex-lane  ·  **Risk:** high · **Execution:** docker backend
