@@ -1,0 +1,20 @@
+### CHUNK-1: Define validated request and graph contracts
+- **Goal:** Establish immutable request, evidence, error, and graph types that reject misleading inputs before any external acquisition.
+- **Milestone:** M1  ·  **Depends on:** none
+- **Serves:** `FR-1`, `FR-6`, `FR-7`, `FR-9`, `NFR-2`, `NFR-5`  ·  **Relevant ADRs:** `0002`, `0005`, `0006`
+- **Touches:** `src/forgeboard_report/domain.py`, `src/forgeboard_report/errors.py`, `src/forgeboard_report/graph.py`, `tests/features/request_and_graph.feature`, `tests/steps/test_request_and_graph_steps.py`, `tests/test_graph.py`
+- **Contract decisions:**
+  - The graph contract is one JSON array whose objects have exactly `id`, `lane`, and `depends_on`; all three are required, ids and lanes are nonempty case-sensitive strings, dependencies are unique strings, and unknown keys are rejected. `lane` is retained as resolved-input evidence but never used as card identity.
+  - Each `depends_on` entry creates a parent-to-child edge. Reject duplicate chunk ids, duplicate dependencies, missing endpoints, self-edges, non-array input, and cycles. Normalized chunks sort by id and edges by `(parent_id, child_id)`; the source fingerprint is SHA-256 of the exact graph bytes.
+  - A board slug must match `^[A-Za-z0-9][A-Za-z0-9_-]*$`. At least one `--operator` value is required; each value must be nonempty and already equal to its surrounding-whitespace-trimmed form, and duplicates are usage errors. Preserve exact case, then sort the accepted identities.
+  - Parse both interval bounds as timezone-aware ISO-8601 values, require `from < to`, preserve the original resolved strings, normalize comparisons to UTC, and expose one half-open membership predicate `from <= occurrence < to`.
+  - Use frozen dataclasses and tuples for domain collections. Define specific usage, source-unavailable/inconsistent, invalid-core/schema, and publication exceptions now; do not add a catch-all or renderer/adapter behavior.
+- **Scenarios:**
+  - Given a valid board, exact operator identities, aware bounds, and an acyclic graph, when inputs are resolved, then originals, UTC bounds, graph hash, sorted chunks, and sorted edges are retained and the lower bound is included while the upper bound is excluded.
+  - Given a naïve, equal, or reversed interval, a blank/trimmed/duplicate operator, no operator, or a traversal-shaped board slug, when inputs are resolved, then a specific usage error identifies the invalid field.
+  - Given duplicate chunks, duplicate dependencies, a missing endpoint, a self-edge, or a cycle, when the graph is loaded, then a specific invalid-core error is raised before source acquisition.
+  - Given equivalent valid graph records in different input orders, when they are normalized, then chunk and edge iteration order is identical while each exact source byte sequence keeps its own fingerprint.
+- **Out of scope:** Hermes or GitHub access, metadata decoding, metric calculation, report rendering, publication, and a runnable console entry point.
+- **Done when:** `make check` is green; all listed BDD scenarios and focused graph tests pass; the repository coverage floor holds; no runtime dependency is added; implementation notes are updated without changing signed requirements, architecture, or ADRs.
+- **Integration gate:** Branch from current `main`; this root chunk may merge only with `make check` green and becomes the sole parent for CHUNK-2.
+- **Lane:** forge-codex-lane  ·  **Risk:** med
