@@ -27,9 +27,11 @@ operator identities, and pull-request merge facts. Every record carries a
 stable source id and its relevant UTC timestamp.
 
 A schema decoder registry is the only place allowed to recognize canonical
-metadata. It accepts `forge.judge.v1` verdicts and structured reason/PR fields
-defined by compatibility fixtures. It never derives canonical values by
-searching free-form bodies, summaries, errors, or comments.
+metadata. From structured run metadata it accepts `forge.judge.v1` verdicts,
+`forge.block.v1` reason classes, and `forge.chunk.v1` PR handoffs. A native
+Hermes block kind remains evidence but is not translated into a Forge
+`reason_class`. The registry never derives canonical values by searching
+free-form bodies, summaries, errors, reasons, or comments.
 
 Validation distinguishes three cases:
 
