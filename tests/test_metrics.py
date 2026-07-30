@@ -2,7 +2,7 @@
 
 import json
 from dataclasses import FrozenInstanceError, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal, localcontext
 
 import pytest
@@ -34,12 +34,31 @@ from forgeboard_report.metrics import calculate, calculate_metrics
 from forgeboard_report.normalize import classify_author, normalize, normalize_sources
 
 
+def _judge_metadata_with(**overrides: object) -> str:
+    metadata = json.loads(judge_metadata())
+    metadata.update(overrides)
+    return json.dumps(metadata)
+
+
+def _judge_metadata_without(*keys: str) -> str:
+    metadata = json.loads(judge_metadata())
+    for key in keys:
+        del metadata[key]
+    return json.dumps(metadata)
+
+
 def test_normalized_snapshot_and_metric_results_are_frozen_and_stably_sorted() -> None:
     snapshot = normalize_fixture(
         ("B", "A"),
         cards=(card("B", completed_at=at(41)), card("A", completed_at=at(40))),
         runs=(
-            run(2, "B", started_at=at(12), ended_at=at(22), metadata=judge_metadata()),
+            run(
+                2,
+                "B",
+                started_at=at(12),
+                ended_at=at(22),
+                metadata=judge_metadata(chunk_id="B"),
+            ),
             run(1, "A", started_at=at(11), ended_at=at(21), metadata=judge_metadata()),
         ),
     )
@@ -50,8 +69,16 @@ def test_normalized_snapshot_and_metric_results_are_frozen_and_stably_sorted() -
         "hermes:run:1",
         "hermes:run:2",
     )
-    assert tuple(ref.id for ref in snapshot.evidence) == tuple(
-        sorted(ref.id for ref in snapshot.evidence)
+    assert tuple(
+        (ref.occurred_at or datetime.min.replace(tzinfo=UTC), ref.id) for ref in snapshot.evidence
+    ) == tuple(
+        sorted(
+            (
+                ref.occurred_at or datetime.min.replace(tzinfo=UTC),
+                ref.id,
+            )
+            for ref in snapshot.evidence
+        )
     )
     with pytest.raises(FrozenInstanceError):
         snapshot.cards = ()  # type: ignore[misc]
@@ -154,39 +181,16 @@ def test_timestamp_inputs_normalize_to_utc_and_block_run_end_is_fallback() -> No
             "missing keys",
         ),
         (
-            '{"schema":"forge.judge.v1","verdict":"pass","scores":'
-            '{"spec_fidelity":"1","scenario_integrity":"2",'
-            '"architectural_conformance":"3"}}',
+            _judge_metadata_with(verdict="pass"),
             "verdict",
         ),
         (
-            '{"schema":"forge.judge.v1","verdict":"APPROVE","scores":'
-            '{"spec_fidelity":"1","scenario_integrity":"2",'
-            '"architectural_conformance":"3"}}',
+            _judge_metadata_with(verdict="APPROVE"),
             "verdict",
         ),
         (
-            '{"schema":"forge.judge.v1","verdict":"approve","scores":[]}',
+            _judge_metadata_with(scores=[]),
             "scores must be an object",
-        ),
-        (
-            '{"schema":"forge.judge.v1","verdict":"approve","scores":'
-            '{"scenario_integrity":"2","architectural_conformance":"3",'
-            '"scope_discipline":"3","debt_honesty":"2",'
-            '"doc_reconciliation":"2"}}',
-            "missing keys",
-        ),
-        (
-            '{"schema":"forge.judge.v1","verdict":"approve","scores":'
-            '{"spec_fidelity":"NaN","scenario_integrity":"2",'
-            '"architectural_conformance":"3"}}',
-            "finite Decimal",
-        ),
-        (
-            '{"schema":"forge.judge.v1","verdict":"approve","scores":'
-            '{"spec_fidelity":true,"scenario_integrity":"2",'
-            '"architectural_conformance":"3"}}',
-            "finite Decimal",
         ),
         ('{"schema":"forge.block.v1","reason_class":""}', "nonempty exact string"),
         (
@@ -207,24 +211,68 @@ def test_declared_malformed_envelopes_fail_schema_validation(
 
 
 @pytest.mark.parametrize(
-    ("score", "message"),
+    ("metadata", "message"),
     [
-        ("-1", "0-3 range"),
-        ("4", "0-3 range"),
-        ("3.5", "0-3 range"),
-        ("Infinity", "finite Decimal"),
-        ("-Infinity", "finite Decimal"),
-        ("NaN", "finite Decimal"),
+        (
+            _judge_metadata_with(
+                scores={
+                    "spec_fidelity": "2",
+                    "scenario_integrity": 3,
+                    "architectural_conformance": 1,
+                    "scope_discipline": 3,
+                    "debt_honesty": 2,
+                    "doc_reconciliation": 2,
+                }
+            ),
+            "must be an integer",
+        ),
+        (
+            _judge_metadata_with(
+                scores={
+                    "spec_fidelity": 2,
+                    "scenario_integrity": 1.5,
+                    "architectural_conformance": 1,
+                    "scope_discipline": 3,
+                    "debt_honesty": 2,
+                    "doc_reconciliation": 2,
+                }
+            ),
+            "must be an integer",
+        ),
+        (
+            _judge_metadata_with(
+                scores={
+                    "spec_fidelity": 2,
+                    "scenario_integrity": 3,
+                    "architectural_conformance": 1,
+                }
+            ),
+            "missing keys",
+        ),
+        (_judge_metadata_with(chunk_id="B"), "does not match mapped chunk"),
+        (_judge_metadata_without("chunk_id"), "missing keys"),
     ],
 )
-def test_judge_scores_reject_values_outside_the_finite_zero_to_three_range(
-    score: str,
+def test_judge_envelopes_reject_noninteger_incomplete_or_wrong_chunk_data(
+    metadata: str,
     message: str,
 ) -> None:
+    with pytest.raises(InvalidSchemaError, match=message):
+        normalize_fixture(
+            ("A",),
+            runs=(run(1, "A", ended_at=at(20), metadata=metadata),),
+        )
+
+
+@pytest.mark.parametrize(
+    "score",
+    [-1, 4],
+)
+def test_judge_scores_reject_integers_outside_zero_to_three(score: int) -> None:
     metadata = json.loads(judge_metadata())
     metadata["scores"]["spec_fidelity"] = score
 
-    with pytest.raises(InvalidSchemaError, match=message):
+    with pytest.raises(InvalidSchemaError, match="0-3 range"):
         normalize_fixture(
             ("A",),
             runs=(
@@ -265,25 +313,20 @@ def test_declared_valid_judge_envelopes_map_rubric_verdicts(
     assert snapshot.verdicts[0].outcome is expected
 
 
-def test_numeric_decimal_scores_and_complete_chunk_handoffs_decode() -> None:
-    numeric_scores = (
-        '{"schema":"forge.judge.v1","verdict":"approve","scores":'
-        '{"spec_fidelity":0,"scenario_integrity":2.5,'
-        '"architectural_conformance":3,"scope_discipline":3,'
-        '"debt_honesty":2,"doc_reconciliation":2}}'
-    )
+def test_integer_scores_and_complete_chunk_handoffs_decode() -> None:
+    integer_scores = judge_metadata(scores=(0, 2, 3, 3, 2, 2))
     snapshot = normalize_fixture(
         ("A",),
         cards=(card("A", completed_at=at(21)),),
         runs=(
-            run(1, "A", ended_at=at(20), metadata=numeric_scores),
+            run(1, "A", ended_at=at(20), metadata=integer_scores),
             run(2, "A", ended_at=at(21), metadata=chunk_metadata("A")),
         ),
         events=(event(1, "A", "completed", at(21), run_id=2),),
     )
 
     assert snapshot.verdicts[0].scores.spec_fidelity == Decimal("0")
-    assert snapshot.verdicts[0].scores.scenario_integrity == Decimal("2.5")
+    assert snapshot.verdicts[0].scores.scenario_integrity == Decimal("2")
     assert snapshot.verdicts[0].scores.architectural_conformance == Decimal("3")
     assert snapshot.handoffs[0].pr == "https://github.com/acme/repo/pull/1"
 
@@ -292,7 +335,7 @@ def test_full_rubric_judge_envelope_decodes_report_dimensions() -> None:
     metadata = json.dumps(
         {
             "schema": "forge.judge.v1",
-            "chunk_id": "CHUNK-3",
+            "chunk_id": "A",
             "pr": "https://github.com/acme/repo/pull/4",
             "verdict": "approve-with-nits",
             "scores": {
@@ -315,6 +358,7 @@ def test_full_rubric_judge_envelope_decodes_report_dimensions() -> None:
             "spot_check_suggestion": "Inspect normalize.py decoder dispatch.",
             "judge_model": "fixture-judge",
             "tokens_estimate": 1234,
+            "unknown_example": "accepted",
         }
     )
 
@@ -644,7 +688,7 @@ def test_quality_includes_in_period_verdict_without_card_completion() -> None:
                 1,
                 "A",
                 ended_at=at(20),
-                metadata=judge_metadata("bounce", ("1", "2", "1")),
+                metadata=judge_metadata("bounce", (1, 2, 1, 3, 2, 2)),
             ),
         ),
     )
