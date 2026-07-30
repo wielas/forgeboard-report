@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,7 +14,8 @@ import pytest
 
 import forgeboard_report.cli as cli
 from fixtures.hermes_019 import build_hermes_019_board
-from fixtures.normalize import at, card, chunk_metadata, event, raw_snapshot, run
+from fixtures.normalize import at, card, raw_snapshot
+from forgeboard_report import publish
 from forgeboard_report.errors import PublicationWriteError
 
 
@@ -121,63 +123,104 @@ def test_read_only_failing_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     invalid_core = invalid.copy()
     invalid_core[1], invalid_core[3] = "forge-board", str(cyclic)
     assert cli.main(invalid_core) == 4
-    publication_error = PublicationWriteError("full")
+    publication_arguments = invalid.copy()
+    publication_arguments[1] = "forge-board"
+    publication_arguments[3] = str(graph_path)
+    publication_arguments[-1] = str(tmp_path / "publication")
     monkeypatch.setattr(
-        cli,
-        "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(publication_error),
+        publish,
+        "publish",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(PublicationWriteError("full")),
     )
-    assert cli.main(invalid) == 5
+    assert (
+        cli.main(
+            publication_arguments,
+            runner=_github_runner,
+            snapshotter=lambda *_args: raw_snapshot(
+                cards=(card("A", completed_at=at(20)),),
+                board_slug="forge-board",
+            ),
+        )
+        == 5
+    )
     assert _hashes(inputs) == before
 
 
-def test_deterministic_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    graph_path = tmp_path / "graph.json"
-    graph_path.write_text(
-        '[{"id":"P","lane":"fixture","depends_on":[]},'
-        '{"id":"C","lane":"fixture","depends_on":["P"]}]',
+def _write_fake_gh(directory: Path) -> Path:
+    executable = directory / "gh"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        + """\
+import json
+import sys
+
+if sys.argv[1:] == ["--version"]:
+    print("gh version 2.96.0")
+else:
+    print('{"data":{"pr0":{"pullRequest":{"id":"NODE-11","url":"https://github.com/example/forge/pull/11","number":11,"state":"MERGED","mergedAt":"2025-08-05T00:00:00+00:00"}}}}')
+""",
         encoding="utf-8",
     )
-    records = (
-        card("P", completed_at=at(20)),
-        card("C"),
-    )
-    runs = (
-        run(1, "P", ended_at=at(20), metadata=chunk_metadata("P")),
-        run(2, "C", started_at=at(25), ended_at=at(26)),
-    )
-    events = (event(1, "P", "completed", at(20), run_id=1),)
-    base_arguments = [
-        "--board",
-        "forge-board",
-        "--graph",
-        str(graph_path),
-        "--from",
-        at(10).isoformat(),
-        "--to",
-        at(50).isoformat(),
-        "--operator",
-        "operator",
-    ]
+    executable.chmod(0o755)
+    return executable
+
+
+def test_deterministic_output(tmp_path: Path) -> None:
     settings = (("1", "UTC0", "C"), ("777", "Pacific/Auckland", "en_NZ.UTF-8"))
     bundles = []
     for index, (seed, timezone, locale) in enumerate(settings):
-        monkeypatch.setenv("PYTHONHASHSEED", seed)
-        monkeypatch.setenv("TZ", timezone)
-        monkeypatch.setenv("LC_ALL", locale)
-        raw = raw_snapshot(
-            cards=records if index == 0 else tuple(reversed(records)),
-            runs=runs if index == 0 else tuple(reversed(runs)),
-            events=events,
+        fixture_directory = tmp_path / f"fixture-{index}"
+        board = build_hermes_019_board(
+            fixture_directory,
+            board_slug="default",
+            journal_mode="delete",
         )
-        destination = tmp_path / f"report-{index}"
-        cli.run(
-            [*base_arguments, "--output", str(destination)],
-            runner=_github_runner,
-            snapshotter=lambda *_args, snapshot=raw: snapshot,
-        )
-        bundles.append(
-            tuple((destination / name).read_bytes() for name in ("report.json", "report.md"))
-        )
+        try:
+            graph_path = fixture_directory / "graph.json"
+            graph_path.write_text(
+                '[{"id":"CHUNK-1","lane":"fixture","depends_on":[]},'
+                '{"id":"CHUNK-ARCHIVED","lane":"fixture","depends_on":["CHUNK-1"]}]',
+                encoding="utf-8",
+            )
+            bin_directory = fixture_directory / "bin"
+            bin_directory.mkdir()
+            _write_fake_gh(bin_directory)
+            destination = fixture_directory / "report"
+            environment = {
+                **os.environ,
+                "HERMES_KANBAN_DB": str(board.database),
+                "LC_ALL": locale,
+                "PATH": f"{bin_directory}{os.pathsep}{os.environ['PATH']}",
+                "PYTHONHASHSEED": seed,
+                "TZ": timezone,
+            }
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "forgeboard_report.cli",
+                    "--board",
+                    "default",
+                    "--graph",
+                    str(graph_path),
+                    "--from",
+                    datetime.fromtimestamp(1_754_000_000 - 60, UTC).isoformat(),
+                    "--to",
+                    datetime.fromtimestamp(1_754_000_500, UTC).isoformat(),
+                    "--operator",
+                    "operator-exact",
+                    "--output",
+                    str(destination),
+                ],
+                check=False,
+                capture_output=True,
+                env=environment,
+                text=True,
+            )
+            assert result.returncode == 0, result.stderr
+            bundles.append(
+                tuple((destination / name).read_bytes() for name in ("report.json", "report.md"))
+            )
+        finally:
+            board.close()
     assert bundles[0] == bundles[1]
-    assert os.environ["TZ"] == settings[-1][1]
