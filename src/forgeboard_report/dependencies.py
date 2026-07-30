@@ -227,15 +227,6 @@ def _classify_waits(snapshot: SourceSnapshot, child_id: str) -> tuple[Dependency
 
 
 def _observed_wait(snapshot: SourceSnapshot, wait: BlockOccurrence) -> DependencyWaitFinding:
-    retries = tuple(
-        run
-        for run in snapshot.runs
-        if run.chunk_id == wait.chunk_id
-        and run.status == "done"
-        and run.outcome == "completed"
-        and run.started_at > wait.occurred_at
-    )
-    retry = min(retries, key=lambda run: (run.started_at, run.id), default=None)
     tied_run = next(
         (
             run
@@ -247,16 +238,36 @@ def _observed_wait(snapshot: SourceSnapshot, wait: BlockOccurrence) -> Dependenc
         ),
         None,
     )
+    if tied_run is not None:
+        return DependencyWaitFinding(
+            wait_id=wait.id,
+            wait_at=wait.occurred_at,
+            status="observed",
+            retry_run_id=tied_run.evidence_id,
+            retry_started_at=tied_run.started_at,
+            operator_comment_id=None,
+            operator_comment_at=None,
+            intervention="indeterminate",
+        )
+    retries = tuple(
+        run
+        for run in snapshot.runs
+        if run.chunk_id == wait.chunk_id
+        and run.status == "done"
+        and run.outcome == "completed"
+        and run.started_at > wait.occurred_at
+    )
+    retry = min(retries, key=lambda run: (run.started_at, run.id), default=None)
     if retry is None:
         return DependencyWaitFinding(
             wait_id=wait.id,
             wait_at=wait.occurred_at,
             status="observed",
-            retry_run_id=tied_run.evidence_id if tied_run else None,
-            retry_started_at=tied_run.started_at if tied_run else None,
+            retry_run_id=None,
+            retry_started_at=None,
             operator_comment_id=None,
             operator_comment_at=None,
-            intervention="indeterminate" if tied_run else "not_observed",
+            intervention="not_observed",
         )
     comments = tuple(
         comment
