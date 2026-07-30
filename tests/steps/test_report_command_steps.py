@@ -37,7 +37,16 @@ def _runner(arguments, **_kwargs):
                     "state": "MERGED",
                     "mergedAt": at(20).isoformat(),
                 }
-            }
+            },
+            "pr1": {
+                "pullRequest": {
+                    "id": "NODE-2",
+                    "url": "https://github.com/acme/repo/pull/2",
+                    "number": 2,
+                    "state": "OPEN",
+                    "mergedAt": None,
+                }
+            },
         }
     }
     return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
@@ -47,17 +56,27 @@ def _case(tmp_path: Path):
     graph_path = tmp_path / "graph.json"
     graph_path.write_text(
         '[{"id":"P","lane":"fixture","depends_on":[]},'
-        '{"id":"C","lane":"fixture","depends_on":["P"]}]\n',
+        '{"id":"Q","lane":"fixture","depends_on":[]},'
+        '{"id":"C","lane":"fixture","depends_on":["P","Q"]}]\n',
         encoding="utf-8",
     )
     raw = raw_snapshot(
-        cards=(card("P", completed_at=at(20)), card("C")),
+        cards=(card("P", completed_at=at(20)), card("Q", completed_at=at(20)), card("C")),
         runs=(
             run(1, "P", ended_at=at(20), metadata=chunk_metadata("P")),
-            run(2, "C", started_at=at(25), ended_at=at(26)),
-            run(3, "C", metadata='{"schema":"future.fixture.v1"}'),
+            run(
+                2,
+                "Q",
+                ended_at=at(20),
+                metadata=chunk_metadata("Q", "https://github.com/acme/repo/pull/2"),
+            ),
+            run(3, "C", started_at=at(25), ended_at=at(26)),
+            run(4, "C", metadata='{"schema":"future.fixture.v1"}'),
         ),
-        events=(event(1, "P", "completed", at(20), run_id=1),),
+        events=(
+            event(1, "P", "completed", at(20), run_id=1),
+            event(2, "Q", "completed", at(20), run_id=2),
+        ),
         board_slug="forge-board",
     )
     arguments = [
@@ -114,9 +133,12 @@ def complete_traceable_artifacts(command_case) -> None:
         "blocked_work",
         "operator_intervention",
     }
-    assert data["dependency_audit"]["edges"][0]["pull_request_id"] == "github:node:NODE-1"
+    assert {edge["pull_request_id"] for edge in data["dependency_audit"]["edges"]} == {
+        "github:node:NODE-1",
+        "github:node:NODE-2",
+    }
     assert data["warnings"] and data["evidence"]
-    assert "github:node:NODE-1" in markdown and "run:2" in markdown
+    assert "github:node:NODE-1" in markdown and "run:3" in markdown
 
 
 @given(
