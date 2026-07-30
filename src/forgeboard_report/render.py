@@ -109,6 +109,12 @@ def render_markdown(report: Report) -> bytes:
         f"- Qualifying comments: {_inline_code(str(intervention['qualifying_comment_count']))} "
         f"({_ids(qualifying_ids)})"
     )
+    source_file_lines = [
+        f"  - {_inline_code(source_file['name'])} "
+        f"({_inline_code(str(source_file['size']))}, "
+        f"{_inline_code(source_file['sha256'])})"
+        for source_file in data["sources"]["hermes_files"]
+    ]
     lines = [
         "# Forgeboard report",
         "",
@@ -121,22 +127,35 @@ def render_markdown(report: Report) -> bytes:
         original_bounds,
         f"- Operators: {_ids(data['inputs']['operator_ids'])}",
         f"- Graph source: {_inline_code(data['sources']['graph']['kind'])} "
-        f"{_inline_code(data['sources']['graph']['sha256'])}",
+        f"{_inline_code(data['sources']['graph']['sha256'])}; "
+        f"version {_nullable_code(data['sources']['graph']['version'])}",
         f"- Hermes source: {_inline_code(data['sources']['hermes']['kind'])} "
-        f"{_inline_code(data['sources']['hermes']['sha256'])}",
+        f"{_inline_code(data['sources']['hermes']['sha256'])}; "
+        f"version {_nullable_code(data['sources']['hermes']['version'])}",
+        "- Hermes source files:",
+        *source_file_lines,
         "",
         "## Canonical metrics",
         "",
         "### Bounce rate",
         "",
+        f"- Status: {_inline_code(bounce['status'])}",
         _metric_line(bounce, "value", "numerator", "denominator"),
         f"- Completed chunks: {_ids(bounce['completed_chunk_ids'])}",
         f"- Bounced chunks: {_ids(bounce['bounced_chunk_ids'])}",
         f"- Verdict evidence: {_ids(verdict_ids)}",
+        f"- Completed without canonical verdict: "
+        f"{_ids(bounce['completed_without_canonical_verdict'])}",
         "",
         "### Judge quality",
         "",
     ]
+    for verdict in bounce["verdicts"]:
+        lines.append(
+            f"- Verdict {_inline_code(verdict['evidence_id'])} / "
+            f"{_inline_code(verdict['chunk_id'])}: {_inline_code(verdict['outcome'])} at "
+            f"{_inline_code(verdict['occurred_at'])}"
+        )
     for name, finding in metrics["judge_quality"].items():
         score_name = _inline_code(name)
         score_sum = _inline_code(str(finding["sum"]))
@@ -144,7 +163,7 @@ def render_markdown(report: Report) -> bytes:
         lines.extend(
             (
                 f"- {score_name}: {_status_value(finding['status'], finding['value'])} "
-                f"(sum {score_sum}, count {score_count})",
+                f"(status {_inline_code(finding['status'])}, sum {score_sum}, count {score_count})",
                 f"  - Score evidence: {_ids([item['evidence_id'] for item in finding['scores']])}",
             )
         )
@@ -167,12 +186,7 @@ def render_markdown(report: Report) -> bytes:
         )
     )
     for occurrence in blocked["occurrences"]:
-        reason = occurrence["reason_class"] or "unavailable"
-        lines.append(
-            f"- {_inline_code(occurrence['id'])} / {_inline_code(occurrence['chunk_id'])}: "
-            f"reason {_inline_code(reason)} at {_inline_code(occurrence['occurred_at'])}; "
-            f"evidence {_ids(occurrence['evidence_ids'])}"
-        )
+        lines.append(_occurrence_line(occurrence))
     lines.extend(
         (
             "",
@@ -186,12 +200,10 @@ def render_markdown(report: Report) -> bytes:
             f"- Indeterminate evidence: {_ids(indeterminate_ids)}",
         )
     )
+    for finding in intervention["qualifying_comments"]:
+        lines.append(_comment_line("Qualifying comment", finding))
     for finding in intervention["comments"]:
-        lines.append(
-            f"- {_inline_code(finding['evidence_id'])} / {_inline_code(finding['chunk_id'])}: "
-            f"{_inline_code(finding['actor_class'])} {_inline_code(finding['disposition'])} at "
-            f"{_inline_code(finding['occurred_at'])}"
-        )
+        lines.append(_comment_line("Comment", finding))
     for finding in intervention["needed_to_execute"]:
         chunk_id = finding["chunk_id"]
         block_id = finding["block_id"]
@@ -203,6 +215,12 @@ def render_markdown(report: Report) -> bytes:
             f"{_inline_code(block_at)}, comment {_inline_code(finding['comment_id'])} at "
             f"{comment_at}, claim {next_claim_id} at "
             f"{_inline_code(finding['next_claim_at'])}"
+        )
+    for finding in intervention["indeterminate"]:
+        lines.append(
+            f"- Indeterminate {_inline_code(finding['chunk_id'])}: "
+            f"{_inline_code(finding['relation'])} at {_inline_code(finding['occurred_at'])}; "
+            f"evidence {_ids(finding['evidence_ids'])}"
         )
     lines.extend(("", "## Dependency audit", ""))
     for edge in data["dependency_audit"]["edges"]:
@@ -216,9 +234,11 @@ def render_markdown(report: Report) -> bytes:
                 "",
                 f"- Attachment: {_inline_code(edge['attachment'])}; observation: "
                 f"{_inline_code(edge['observation'])}",
+                f"- Link evidence: {_ids(edge['link_evidence_ids'])}",
                 f"- Handoff: {handoff_id} at {handoff_at}",
                 f"- Pull request: {_inline_code(edge['pull_request_id'])} "
                 f"({_inline_code(edge['pull_request_url'])})",
+                f"- Merged at: {_nullable_code(edge['merged_at'])}",
                 f"- Runs: {_ids(run_ids)}",
                 f"- Waits: {_ids(wait_ids)}",
                 "",
@@ -235,12 +255,26 @@ def render_markdown(report: Report) -> bytes:
             lines.append(
                 f"  - Wait {_inline_code(wait['wait_id'] or 'unavailable')} at "
                 f"{wait_at}: {status}, "
-                f"retry {_inline_code(wait['retry_run_id'] or 'unavailable')}, "
-                f"operator {_inline_code(wait['operator_comment_id'] or 'unavailable')}, "
+                f"retry {_inline_code(wait['retry_run_id'] or 'unavailable')} at "
+                f"{_nullable_code(wait['retry_started_at'])}, "
+                f"operator {_inline_code(wait['operator_comment_id'] or 'unavailable')} at "
+                f"{_nullable_code(wait['operator_comment_at'])}, "
                 f"intervention {_inline_code(wait['intervention'])}"
             )
-    unexpected_ids = [item["evidence_id"] for item in data["dependency_audit"]["unexpected_links"]]
-    lines.extend((f"- Unexpected links: {_ids(unexpected_ids)}", ""))
+    unexpected_links = data["dependency_audit"]["unexpected_links"]
+    if unexpected_links:
+        lines.append("- Unexpected links:")
+        for link in unexpected_links:
+            lines.append(
+                f"  - parent chunk {_nullable_code(link['parent_chunk_id'])}; "
+                f"child chunk {_nullable_code(link['child_chunk_id'])}; "
+                f"parent task {_inline_code(link['parent_task_id'])}; "
+                f"child task {_inline_code(link['child_task_id'])}; "
+                f"evidence {_inline_code(link['evidence_id'])}"
+            )
+    else:
+        lines.append("- Unexpected links: none")
+    lines.append("")
     lines.extend(("## Warnings and unclassified evidence", ""))
     for warning in data["warnings"]:
         detail = _markdown_text(warning["detail"])
@@ -250,10 +284,7 @@ def render_markdown(report: Report) -> bytes:
             f"(schema {_inline_code(schema)}): {detail}"
         )
     for occurrence in metrics["blocked_work"]["unclassified"]:
-        lines.append(
-            f"- Unclassified block {_inline_code(occurrence['id'])} for "
-            f"{_inline_code(occurrence['chunk_id'])} at {_inline_code(occurrence['occurred_at'])}"
-        )
+        lines.append(f"- Unclassified block {_occurrence_line(occurrence)[2:]}")
     if not data["warnings"] and not metrics["blocked_work"]["unclassified"]:
         lines.append("- None")
     lines.extend(("", "## Evidence index", ""))
@@ -645,11 +676,36 @@ def _flatten_ids(items: Sequence[Mapping[str, Any]]) -> list[str]:
 def _reason_buckets(reasons: Sequence[Mapping[str, Any]]) -> str:
     return (
         ", ".join(
-            f"{_inline_code(str(item['reason_class']))}: {_inline_code(str(item['count']))}"
+            f"{_inline_code(str(item['reason_class']))}: {_inline_code(str(item['count']))} "
+            f"({_ids(item.get('occurrence_ids', ()))})"
             for item in reasons
         )
         or "none"
     )
+
+
+def _occurrence_line(occurrence: Mapping[str, Any]) -> str:
+    reason = occurrence["reason_class"] or "unavailable"
+    return (
+        f"- {_inline_code(occurrence['id'])} / {_inline_code(occurrence['chunk_id'])}: "
+        f"task {_inline_code(str(occurrence['task_id']))}, "
+        f"run {_inline_code(str(occurrence['run_id']))}; "
+        f"reason {_inline_code(reason)}; native kinds {_ids(occurrence['native_kinds'])}; "
+        f"at {_inline_code(occurrence['occurred_at'])}; evidence {_ids(occurrence['evidence_ids'])}"
+    )
+
+
+def _comment_line(label: str, finding: Mapping[str, Any]) -> str:
+    return (
+        f"- {label} {_inline_code(finding['evidence_id'])} / "
+        f"{_inline_code(finding['chunk_id'])}: author {_inline_code(finding['author'])}; "
+        f"{_inline_code(finding['actor_class'])} {_inline_code(finding['disposition'])} at "
+        f"{_inline_code(finding['occurred_at'])}"
+    )
+
+
+def _nullable_code(value: str | None) -> str:
+    return _inline_code(value) if value is not None else "unavailable"
 
 
 def _metric_line(value: Mapping[str, Any], display: str, numerator: str, denominator: str) -> str:
