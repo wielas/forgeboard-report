@@ -238,17 +238,6 @@ def _observed_wait(snapshot: SourceSnapshot, wait: BlockOccurrence) -> Dependenc
         ),
         None,
     )
-    if tied_run is not None:
-        return DependencyWaitFinding(
-            wait_id=wait.id,
-            wait_at=wait.occurred_at,
-            status="observed",
-            retry_run_id=tied_run.evidence_id,
-            retry_started_at=tied_run.started_at,
-            operator_comment_id=None,
-            operator_comment_at=None,
-            intervention="indeterminate",
-        )
     retries = tuple(
         run
         for run in snapshot.runs
@@ -277,7 +266,10 @@ def _observed_wait(snapshot: SourceSnapshot, wait: BlockOccurrence) -> Dependenc
     between = tuple(
         comment for comment in comments if wait.occurred_at < comment.occurred_at < retry.started_at
     )
-    if between:
+    if tied_run is not None:
+        comment = None
+        intervention = "indeterminate"
+    elif between:
         comment = min(between, key=lambda item: (item.occurred_at, item.id))
         intervention = "before_retry"
     else:
