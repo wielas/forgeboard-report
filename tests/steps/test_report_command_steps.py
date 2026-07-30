@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,11 +12,11 @@ from pytest_bdd import given, scenarios, then, when
 
 import forgeboard_report.cli as cli
 from fixtures.normalize import at, card, chunk_metadata, event, raw_snapshot, run
+from forgeboard_report import publish
 from forgeboard_report.errors import (
-    InvalidCoreError,
+    PublicationRenameError,
     PublicationWriteError,
     SourceUnavailableError,
-    UsageError,
 )
 
 scenarios("../features/report_command.feature")
@@ -96,6 +97,28 @@ def _case(tmp_path: Path):
     return {"arguments": arguments, "raw": raw, "destination": tmp_path / "report"}
 
 
+def _unavailable_gh_runner(arguments, **_kwargs):
+    raise FileNotFoundError("gh")
+
+
+def _old_gh_runner(arguments, **_kwargs):
+    args = tuple(arguments)
+    assert args == ("gh", "--version")
+    return subprocess.CompletedProcess(args, 0, "gh version 2.95.0\n", "")
+
+
+def _malformed_github_runner(arguments, **_kwargs):
+    args = tuple(arguments)
+    if args == ("gh", "--version"):
+        return subprocess.CompletedProcess(args, 0, "gh version 2.96.0\n", "")
+    assert args[:3] == ("gh", "api", "graphql")
+    return subprocess.CompletedProcess(args, 0, "{not json", "")
+
+
+def _unavailable_snapshotter(*_args):
+    raise SourceUnavailableError("Hermes board", "unknown board")
+
+
 @given(
     "a valid recorded board, graph, exact operators, aware period, and fake "
     "merged/unmerged PR facts",
@@ -147,9 +170,26 @@ def complete_traceable_artifacts(command_case) -> None:
 )
 def invalid_input_case(tmp_path: Path):
     case = _case(tmp_path)
-    case["arguments"][1] = "bad/slash"
-    case["error"] = UsageError("board", "invalid")
-    return case
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    missing_operator = [
+        value for index, value in enumerate(case["arguments"]) if index not in (8, 9)
+    ]
+    missing_period = [value for index, value in enumerate(case["arguments"]) if index not in (4, 5)]
+    missing_to = [value for index, value in enumerate(case["arguments"]) if index not in (6, 7)]
+    return {
+        "failures": (
+            {"arguments": [*case["arguments"][:1], "bad/slash", *case["arguments"][2:]]},
+            {"arguments": [*case["arguments"][:5], "not-a-date", *case["arguments"][6:]]},
+            {"arguments": [*case["arguments"][:-1], str(existing)]},
+            {"arguments": missing_operator},
+            {"arguments": missing_period},
+            {"arguments": missing_to},
+        ),
+        "destinations": (case["destination"],) * 5 + (existing,),
+        "runner": _runner,
+        "snapshotter": lambda *_args: case["raw"],
+    }
 
 
 @given(
@@ -158,51 +198,113 @@ def invalid_input_case(tmp_path: Path):
 )
 def unavailable_case(tmp_path: Path):
     case = _case(tmp_path)
-    case["error"] = SourceUnavailableError("github cli", "unavailable")
-    return case
+    missing_graph = tmp_path / "missing.json"
+    return {
+        "failures": (
+            {"arguments": case["arguments"], "snapshotter": _unavailable_snapshotter},
+            {"arguments": [*case["arguments"][:3], str(missing_graph), *case["arguments"][4:]]},
+            {"arguments": case["arguments"], "runner": _unavailable_gh_runner},
+            {"arguments": case["arguments"], "runner": _old_gh_runner},
+        ),
+        "destinations": (case["destination"],) * 4,
+        "runner": _runner,
+        "snapshotter": lambda *_args: case["raw"],
+    }
 
 
 @given("a cyclic graph or malformed canonical evidence", target_fixture="failing_case")
 def invalid_core_case(tmp_path: Path):
     case = _case(tmp_path)
-    case["error"] = InvalidCoreError("graph", "cycle")
-    return case
+    cyclic = tmp_path / "cyclic.json"
+    cyclic.write_text(
+        '[{"id":"A","lane":"fixture","depends_on":["B"]},'
+        '{"id":"B","lane":"fixture","depends_on":["A"]}]\n',
+        encoding="utf-8",
+    )
+    malformed_snapshot = replace(
+        case["raw"],
+        runs=(
+            run(
+                1,
+                "P",
+                ended_at=at(20),
+                metadata='{"schema":"forge.chunk.v1","chunk_id":"P"}',
+            ),
+            *case["raw"].runs[1:],
+        ),
+    )
+    return {
+        "failures": (
+            {"arguments": [*case["arguments"][:3], str(cyclic), *case["arguments"][4:]]},
+            {
+                "arguments": case["arguments"],
+                "snapshotter": lambda *_args: malformed_snapshot,
+            },
+            {"arguments": case["arguments"], "runner": _malformed_github_runner},
+        ),
+        "destinations": (case["destination"],) * 3,
+        "runner": _runner,
+        "snapshotter": lambda *_args: case["raw"],
+    }
 
 
 @given("a simulated publication failure", target_fixture="failing_case")
-def publication_case(tmp_path: Path):
+def publication_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     case = _case(tmp_path)
-    case["error"] = PublicationWriteError("disk full")
-    return case
+    failures = (PublicationWriteError("disk full"), PublicationRenameError("cross-device rename"))
+    remaining = iter(failures)
+    monkeypatch.setattr(
+        publish,
+        "publish",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(next(remaining)),
+    )
+    return {
+        "failures": ({"arguments": case["arguments"]},) * len(failures),
+        "destinations": (case["destination"],) * len(failures),
+        "runner": _runner,
+        "snapshotter": lambda *_args: case["raw"],
+    }
 
 
 @when("the command runs")
-def failing_command_runs(failing_case, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-    error = failing_case["error"]
-    monkeypatch.setattr(cli, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(error))
-    failing_case["exit_code"] = cli.main(failing_case["arguments"])
-    failing_case["stderr"] = capsys.readouterr().err
+def failing_command_runs(failing_case, capsys) -> None:
+    results = []
+    for failure, destination in zip(
+        failing_case["failures"], failing_case["destinations"], strict=True
+    ):
+        exit_code = cli.main(
+            failure["arguments"],
+            runner=failure.get("runner", failing_case["runner"]),
+            snapshotter=failure.get("snapshotter", failing_case["snapshotter"]),
+        )
+        results.append((exit_code, capsys.readouterr().err, destination))
+    failing_case["results"] = tuple(results)
 
 
 @then("it exits 2 with a diagnostic on stderr and no report directory")
 def usage_exit(failing_case) -> None:
-    assert failing_case["exit_code"] == 2
-    assert failing_case["stderr"] and not failing_case["destination"].exists()
+    _assert_failures(failing_case, 2)
 
 
 @then("it exits 3 with a diagnostic on stderr and no report directory")
 def unavailable_exit(failing_case) -> None:
-    assert failing_case["exit_code"] == 3
-    assert failing_case["stderr"] and not failing_case["destination"].exists()
+    _assert_failures(failing_case, 3)
 
 
 @then("it exits 4 with a diagnostic on stderr and no report directory")
 def core_exit(failing_case) -> None:
-    assert failing_case["exit_code"] == 4
-    assert failing_case["stderr"] and not failing_case["destination"].exists()
+    _assert_failures(failing_case, 4)
 
 
 @then("it exits 5 with a diagnostic on stderr and no report directory")
 def publication_exit(failing_case) -> None:
-    assert failing_case["exit_code"] == 5
-    assert failing_case["stderr"] and not failing_case["destination"].exists()
+    _assert_failures(failing_case, 5)
+
+
+def _assert_failures(failing_case, expected_exit_code: int) -> None:
+    assert failing_case["results"]
+    for exit_code, stderr, destination in failing_case["results"]:
+        assert exit_code == expected_exit_code
+        assert stderr
+        assert not (destination / "report.json").exists()
+        assert not (destination / "report.md").exists()

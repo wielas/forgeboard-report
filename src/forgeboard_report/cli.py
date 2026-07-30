@@ -116,10 +116,15 @@ def run(
     publish_report(request.output_directory, report, renderer=lambda _report: rendered)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    runner: _Runner = subprocess.run,
+    snapshotter: _Capture = capture,
+) -> int:
     """Translate typed boundary failures to the command's stable exit codes."""
     try:
-        run(argv)
+        run(argv, runner=runner, snapshotter=snapshotter)
     except SystemExit as error:
         return int(error.code) if isinstance(error.code, int) else 2
     except UsageError as error:
@@ -139,3 +144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _diagnostic(error: Exception) -> None:
     print(f"forgeboard-report: {error}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
