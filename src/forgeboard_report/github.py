@@ -15,6 +15,7 @@ from forgeboard_report.errors import InvalidCoreError, SourceUnavailableError
 _MINIMUM_GH_VERSION = (2, 96, 0)
 _MAX_BATCH_SIZE = 50
 _TIMEOUT_SECONDS = 5
+_OUTPUT_CAP = 65536
 _VERSION_PATTERN = re.compile(r"^gh version (\d+)\.(\d+)(?:\.(\d+))?", re.MULTILINE)
 _Runner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -183,7 +184,7 @@ def _parse_merged_at(value: object, expected: PullRequestRef) -> datetime | None
 
 def _run(args: tuple[str, ...], runner: _Runner) -> subprocess.CompletedProcess[str]:
     try:
-        return runner(
+        result = runner(
             list(args),
             capture_output=True,
             check=False,
@@ -191,6 +192,9 @@ def _run(args: tuple[str, ...], runner: _Runner) -> subprocess.CompletedProcess[
             text=True,
             timeout=_TIMEOUT_SECONDS,
         )
+        _output(result.stdout)
+        _output(result.stderr)
+        return result
     except FileNotFoundError as error:
         raise SourceUnavailableError("github cli", "gh command is unavailable") from error
     except subprocess.TimeoutExpired as error:
@@ -203,8 +207,12 @@ def _output(value: str | bytes | None) -> str:
     if value is None:
         return ""
     if isinstance(value, bytes):
+        if len(value) > _OUTPUT_CAP:
+            raise SourceUnavailableError("github", "command output exceeded 65536 bytes")
         value = value.decode("utf-8", errors="replace")
-    return value[:65536]
+    elif len(value.encode("utf-8", errors="replace")) > _OUTPUT_CAP:
+        raise SourceUnavailableError("github", "command output exceeded 65536 bytes")
+    return value
 
 
 def _command_failure(result: subprocess.CompletedProcess[str]) -> str:
