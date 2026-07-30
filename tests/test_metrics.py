@@ -218,6 +218,10 @@ def test_timestamp_inputs_normalize_to_utc_and_block_run_end_is_fallback() -> No
             "complete URL",
         ),
         (
+            _judge_metadata_with(pr="https://[invalid/path"),
+            "complete URL",
+        ),
+        (
             _judge_metadata_with(findings="not-a-list"),
             "must be a list",
         ),
@@ -300,6 +304,10 @@ def test_timestamp_inputs_normalize_to_utc_and_block_run_end_is_fallback() -> No
         ('{"schema":"forge.block.v1","reason_class":""}', "nonempty exact string"),
         (
             '{"schema":"forge.chunk.v1","chunk_id":"A","pr":"/relative"}',
+            "complete URL",
+        ),
+        (
+            '{"schema":"forge.chunk.v1","chunk_id":"A","pr":"https://[invalid/path"}',
             "complete URL",
         ),
     ],
@@ -391,16 +399,61 @@ def test_judge_scores_reject_integers_outside_zero_to_three(score: int) -> None:
         )
 
 
+def test_approve_with_zero_score_is_rejected_as_rubric_inconsistent() -> None:
+    metadata = json.loads(judge_metadata())
+    metadata["scores"]["spec_fidelity"] = 0
+    metadata["findings"] = [_judge_finding_with(severity="block")]
+
+    with pytest.raises(InvalidSchemaError, match="expected 'bounce'"):
+        normalize_fixture(
+            ("A",),
+            runs=(run(1, "A", ended_at=at(20), metadata=json.dumps(metadata)),),
+        )
+
+
+def test_approve_with_nits_requires_a_qualifying_one_score() -> None:
+    metadata = json.loads(judge_metadata("approve-with-nits", (2, 3, 3, 3, 3, 3)))
+
+    with pytest.raises(InvalidSchemaError, match="expected 'approve'"):
+        normalize_fixture(
+            ("A",),
+            runs=(run(1, "A", ended_at=at(20), metadata=json.dumps(metadata)),),
+        )
+
+
 @pytest.mark.parametrize(
-    ("verdict", "expected"),
+    "dimension",
+    (
+        "spec_fidelity",
+        "scenario_integrity",
+        "architectural_conformance",
+        "scope_discipline",
+        "debt_honesty",
+        "doc_reconciliation",
+    ),
+)
+def test_each_subthree_score_requires_a_same_dimension_finding(dimension: str) -> None:
+    metadata = json.loads(judge_metadata())
+    metadata["scores"][dimension] = 2
+
+    with pytest.raises(InvalidSchemaError, match=rf"score '{dimension}' below 3"):
+        normalize_fixture(
+            ("A",),
+            runs=(run(1, "A", ended_at=at(20), metadata=json.dumps(metadata)),),
+        )
+
+
+@pytest.mark.parametrize(
+    ("verdict", "scores", "expected"),
     [
-        ("approve", JudgeOutcome.PASS),
-        ("approve-with-nits", JudgeOutcome.PASS),
-        ("bounce", JudgeOutcome.BOUNCE),
+        ("approve", (3, 3, 3, 3, 3, 3), JudgeOutcome.PASS),
+        ("approve-with-nits", (2, 1, 3, 3, 3, 3), JudgeOutcome.PASS),
+        ("bounce", (0, 0, 0, 0, 0, 0), JudgeOutcome.BOUNCE),
     ],
 )
 def test_declared_valid_judge_envelopes_map_rubric_verdicts(
     verdict: str,
+    scores: tuple[int, int, int, int, int, int],
     expected: JudgeOutcome,
 ) -> None:
     snapshot = normalize_fixture(
@@ -410,7 +463,7 @@ def test_declared_valid_judge_envelopes_map_rubric_verdicts(
                 1,
                 "A",
                 ended_at=at(20),
-                metadata=judge_metadata(verdict),
+                metadata=judge_metadata(verdict, scores),
             ),
         ),
     )
@@ -419,7 +472,7 @@ def test_declared_valid_judge_envelopes_map_rubric_verdicts(
 
 
 def test_integer_scores_and_complete_chunk_handoffs_decode() -> None:
-    integer_scores = judge_metadata(scores=(0, 2, 3, 3, 2, 2))
+    integer_scores = judge_metadata("bounce", scores=(0, 2, 3, 3, 2, 2))
     snapshot = normalize_fixture(
         ("A",),
         cards=(card("A", completed_at=at(21)),),
@@ -448,7 +501,7 @@ def test_full_rubric_judge_envelope_decodes_report_dimensions() -> None:
                 "scenario_integrity": 2,
                 "architectural_conformance": 3,
                 "scope_discipline": 3,
-                "debt_honesty": 2,
+                "debt_honesty": 1,
                 "doc_reconciliation": 2,
             },
             "findings": [
@@ -457,7 +510,19 @@ def test_full_rubric_judge_envelope_decodes_report_dimensions() -> None:
                     "severity": "nit",
                     "evidence": "tests/test_metrics.py: full envelope",
                     "action": "Keep the regression envelope complete.",
-                }
+                },
+                {
+                    "dimension": "debt_honesty",
+                    "severity": "nit",
+                    "evidence": "tests/test_metrics.py: full envelope",
+                    "action": "Keep the regression envelope complete.",
+                },
+                {
+                    "dimension": "doc_reconciliation",
+                    "severity": "nit",
+                    "evidence": "tests/test_metrics.py: full envelope",
+                    "action": "Keep the regression envelope complete.",
+                },
             ],
             "nits_as_cards": ["CARD?: preserve additive judge metadata"],
             "spot_check_suggestion": "Inspect normalize.py decoder dispatch.",
@@ -807,7 +872,14 @@ def test_decimal_division_is_independent_of_the_callers_decimal_context() -> Non
     snapshot = normalize_fixture(
         ("A", "B", "C"),
         cards=tuple(card(chunk, completed_at=at(40)) for chunk in ("A", "B", "C")),
-        runs=(run(1, "A", ended_at=at(20), metadata=judge_metadata("bounce")),),
+        runs=(
+            run(
+                1,
+                "A",
+                ended_at=at(20),
+                metadata=judge_metadata("bounce", (0, 0, 0, 0, 0, 0)),
+            ),
+        ),
     )
     with localcontext() as caller_context:
         caller_context.prec = 3

@@ -811,6 +811,7 @@ def _decode_judge(
         "ci-red",
     }
     finding_severities = {"nit", "fix", "block"}
+    decoded_findings: list[tuple[str, str]] = []
     for index, finding in enumerate(findings):
         label = f"forge.judge.v1 findings[{index}]"
         if not isinstance(finding, dict):
@@ -848,6 +849,7 @@ def _decode_judge(
                     evidence_id,
                     f"{label} has unknown key {key!r}",
                 )
+        decoded_findings.append((finding["dimension"], finding["severity"]))
     nits_as_cards = value["nits_as_cards"]
     if not isinstance(nits_as_cards, list):
         raise InvalidSchemaError(
@@ -893,6 +895,12 @@ def _decode_judge(
     decoded_scores = {
         name: _finite_decimal(scores[name], evidence_id, name) for name in _SCORE_NAMES
     }
+    _validate_judge_consistency(
+        verdict,
+        decoded_scores,
+        decoded_findings,
+        evidence_id,
+    )
     for key in value:
         if key not in required_keys:
             raise InvalidSchemaError(
@@ -989,6 +997,66 @@ def _finite_decimal(value: Any, evidence_id: str, name: str) -> Decimal:
     return value
 
 
+def _validate_judge_consistency(
+    verdict: str,
+    scores: dict[str, Decimal],
+    findings: list[tuple[str, str]],
+    evidence_id: str,
+) -> None:
+    """Enforce the rubric's score, finding, and verdict contract."""
+    zero = Decimal(0)
+    one = Decimal(1)
+    three = Decimal(3)
+    is_ci_red_sentinel = all(score == zero for score in scores.values())
+    if is_ci_red_sentinel:
+        if verdict != "bounce":
+            raise InvalidSchemaError(
+                evidence_id,
+                "forge.judge.v1 ci-red sentinel requires verdict 'bounce'",
+            )
+        return
+
+    finding_dimensions = {dimension for dimension, _severity in findings}
+    for dimension, score in scores.items():
+        if score < three and dimension not in finding_dimensions:
+            raise InvalidSchemaError(
+                evidence_id,
+                f"forge.judge.v1 score {dimension!r} below 3 requires a corresponding finding",
+            )
+    if "ci-red" in finding_dimensions:
+        raise InvalidSchemaError(
+            evidence_id,
+            "forge.judge.v1 ci-red finding requires the all-zero ci-red sentinel",
+        )
+
+    has_zero = any(score == zero for score in scores.values())
+    one_finding_severities = [
+        severity for dimension, severity in findings if scores.get(dimension) == one
+    ]
+    has_one = bool(one_finding_severities)
+    all_one_findings_are_nits = all(severity == "nit" for severity in one_finding_severities)
+    approve_is_required = (
+        not has_zero
+        and not has_one
+        and all(scores[dimension] >= Decimal(2) for dimension in _SCORE_NAMES[:3])
+    )
+    approve_with_nits_is_required = not has_zero and has_one and all_one_findings_are_nits
+    expected_verdict = (
+        "approve"
+        if approve_is_required
+        else "approve-with-nits"
+        if approve_with_nits_is_required
+        else "bounce"
+    )
+    if verdict != expected_verdict:
+        raise InvalidSchemaError(
+            evidence_id,
+            "forge.judge.v1 verdict "
+            f"{verdict!r} is inconsistent with scores and findings; "
+            f"expected {expected_verdict!r}",
+        )
+
+
 def _decode_json(value: str | bytes) -> Any:
     return json.loads(
         value,
@@ -1025,7 +1093,10 @@ def _reject_json_constant(value: str) -> None:
 def _is_complete_url(value: str) -> bool:
     if value != value.strip() or any(character.isspace() for character in value):
         return False
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
     return bool(parsed.scheme and parsed.netloc and parsed.path)
 
 

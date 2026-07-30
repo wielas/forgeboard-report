@@ -33,11 +33,38 @@ def at(minutes: int) -> datetime:
 
 def judge_metadata(
     verdict: str = "approve",
-    scores: tuple[int, int, int, int, int, int] = (2, 3, 1, 3, 2, 2),
+    scores: tuple[int, int, int, int, int, int] = (3, 3, 3, 3, 3, 3),
     *,
     chunk_id: str = "A",
 ) -> str:
     """Build one complete rubric judge envelope with all six integer scores."""
+    dimensions = (
+        "spec_fidelity",
+        "scenario_integrity",
+        "architectural_conformance",
+        "scope_discipline",
+        "debt_honesty",
+        "doc_reconciliation",
+    )
+    is_ci_red_sentinel = verdict == "bounce" and all(score == 0 for score in scores)
+    findings = (
+        []
+        if is_ci_red_sentinel
+        else [
+            {
+                "dimension": dimension,
+                "severity": (
+                    "nit"
+                    if score == 2 or (score == 1 and verdict == "approve-with-nits")
+                    else "block"
+                ),
+                "evidence": f"tests/fixtures/normalize.py: {dimension} score",
+                "action": f"Address the {dimension} finding.",
+            }
+            for dimension, score in zip(dimensions, scores, strict=True)
+            if score < 3
+        ]
+    )
     return json.dumps(
         {
             "schema": "forge.judge.v1",
@@ -52,7 +79,7 @@ def judge_metadata(
                 "debt_honesty": scores[4],
                 "doc_reconciliation": scores[5],
             },
-            "findings": [],
+            "findings": findings,
             "nits_as_cards": [],
             "spot_check_suggestion": "Inspect the densest changed normalization path.",
             "judge_model": "fixture-judge",
@@ -273,7 +300,7 @@ def multiple_verdict_snapshot() -> SourceSnapshot:
                 1,
                 "A",
                 ended_at=at(20),
-                metadata=judge_metadata("approve", (2, 1, 2, 3, 2, 2)),
+                metadata=judge_metadata("approve-with-nits", (2, 1, 2, 3, 2, 2)),
             ),
             run(
                 2,
@@ -423,7 +450,7 @@ def boundary_snapshot() -> SourceSnapshot:
                 "LOWER",
                 ended_at=at(10),
                 metadata=judge_metadata(
-                    "approve",
+                    "approve-with-nits",
                     (1, 2, 3, 3, 2, 2),
                     chunk_id="LOWER",
                 ),
@@ -434,7 +461,7 @@ def boundary_snapshot() -> SourceSnapshot:
                 ended_at=at(50),
                 metadata=judge_metadata(
                     "bounce",
-                    (3, 3, 3, 3, 2, 2),
+                    (1, 3, 3, 3, 2, 2),
                     chunk_id="UPPER",
                 ),
             ),

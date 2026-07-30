@@ -24,7 +24,7 @@ PARENT_METADATA = (
 ARCHIVED_METADATA = (
     '{"schema":"forge.judge.v1","chunk_id":"CHUNK-ARCHIVED",'
     '"pr":"https://github.com/example/forge/pull/12","verdict":"approve",'
-    '"scores":{"spec_fidelity":2,"scenario_integrity":2,'
+    '"scores":{"spec_fidelity":3,"scenario_integrity":3,'
     '"architectural_conformance":3,"scope_discipline":3,'
     '"debt_honesty":3,"doc_reconciliation":3},"findings":[],'
     '"nits_as_cards":[],"spot_check_suggestion":"Inspect the archived diff.",'
