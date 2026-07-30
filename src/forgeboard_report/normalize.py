@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
-from urllib.parse import urlsplit
 
 from forgeboard_report.domain import (
     ActorClass,
@@ -26,6 +25,7 @@ from forgeboard_report.domain import (
     NormalizedComment,
     NormalizedEvent,
     NormalizedRun,
+    PullRequestRef,
     RawHermesCard,
     RawHermesEvent,
     RawHermesRun,
@@ -345,19 +345,21 @@ def _normalize_links(
     links: list[BoardLink] = []
     seen: set[tuple[str, str]] = set()
     for raw_link in raw_hermes.links:
-        if raw_link.parent_id not in chunk_by_task or raw_link.child_id not in chunk_by_task:
-            continue
         identity = (raw_link.parent_id, raw_link.child_id)
         if identity in seen:
             raise InvalidCoreError(
                 _link_evidence_id(*identity),
-                "duplicate mapped board link",
+                (
+                    "duplicate mapped board link"
+                    if raw_link.parent_id in chunk_by_task and raw_link.child_id in chunk_by_task
+                    else "duplicate board link"
+                ),
             )
         seen.add(identity)
         links.append(
             BoardLink(
-                parent_chunk_id=chunk_by_task[raw_link.parent_id],
-                child_chunk_id=chunk_by_task[raw_link.child_id],
+                parent_chunk_id=chunk_by_task.get(raw_link.parent_id),
+                child_chunk_id=chunk_by_task.get(raw_link.child_id),
                 parent_task_id=raw_link.parent_id,
                 child_task_id=raw_link.child_id,
                 evidence_id=_link_evidence_id(*identity),
@@ -367,8 +369,9 @@ def _normalize_links(
         sorted(
             links,
             key=lambda link: (
-                link.parent_chunk_id,
-                link.child_chunk_id,
+                link.parent_chunk_id is None or link.child_chunk_id is None,
+                link.parent_chunk_id or "",
+                link.child_chunk_id or "",
                 link.evidence_id,
             ),
         )
@@ -414,17 +417,18 @@ def _normalize_handoffs(
     events: tuple[NormalizedEvent, ...],
     decoded_by_run: dict[int, _DecodedMetadata],
 ) -> tuple[ChunkHandoff, ...]:
-    completed_run_keys = {
-        (event.task_id, event.run_id)
-        for event in events
-        if event.kind == "completed" and event.run_id is not None
-    }
+    completion_events: dict[tuple[str, int], list[str]] = {}
+    for event in events:
+        if event.kind == "completed" and event.run_id is not None:
+            completion_events.setdefault((event.task_id, event.run_id), []).append(
+                event.evidence_id
+            )
     handoffs: list[ChunkHandoff] = []
     for run in runs:
         if (
             run.status != "done"
             or run.outcome != "completed"
-            or (run.task_id, run.id) not in completed_run_keys
+            or (run.task_id, run.id) not in completion_events
         ):
             continue
         decoded = decoded_by_run.get(run.id)
@@ -436,6 +440,11 @@ def _normalize_handoffs(
                 f"forge.chunk.v1 chunk_id {decoded.chunk_id!r} does not match "
                 f"mapped chunk {run.chunk_id!r}",
             )
+        if run.ended_at is None:
+            raise InvalidCoreError(
+                run.evidence_id,
+                "forge.chunk.v1 completed run requires ended_at",
+            )
         handoffs.append(
             ChunkHandoff(
                 id=run.evidence_id,
@@ -444,7 +453,9 @@ def _normalize_handoffs(
                 run_id=run.id,
                 pr=decoded.pr,
                 occurred_at=run.ended_at,
-                evidence_ids=(run.evidence_id,),
+                evidence_ids=tuple(
+                    sorted({run.evidence_id, *completion_events[(run.task_id, run.id)]})
+                ),
             )
         )
     return tuple(
@@ -1091,13 +1102,11 @@ def _reject_json_constant(value: str) -> None:
 
 
 def _is_complete_url(value: str) -> bool:
-    if value != value.strip() or any(character.isspace() for character in value):
-        return False
     try:
-        parsed = urlsplit(value)
+        PullRequestRef.parse(value)
     except ValueError:
         return False
-    return bool(parsed.scheme and parsed.netloc and parsed.path)
+    return True
 
 
 def _parse_optional_timestamp(
