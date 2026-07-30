@@ -3,6 +3,8 @@
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal
+from enum import StrEnum
 from pathlib import Path
 
 from forgeboard_report.errors import InvalidCoreError, UsageError
@@ -137,6 +139,329 @@ class RawHermesSnapshot:
     comments: tuple[RawHermesComment, ...]
     fingerprint: SourceFingerprint
     source_files: tuple[SourceFileFingerprint, ...]
+
+
+class ActorClass(StrEnum):
+    """Exact author classifications used by intervention findings."""
+
+    OPERATOR = "operator"
+    WORKER = "worker"
+    PREJUDGE = "prejudge"
+    AUTOMATED = "automated"
+    UNCLASSIFIED = "unclassified"
+
+
+class EvidenceRole(StrEnum):
+    """Whether evidence contributes to an aggregate or only establishes context."""
+
+    CONTRIBUTING = "contributing"
+    CONTEXT = "context"
+
+
+class JudgeOutcome(StrEnum):
+    """Canonical outcomes accepted from ``forge.judge.v1``."""
+
+    PASS = "pass"
+    BOUNCE = "bounce"
+
+
+class Availability(StrEnum):
+    """Explicit value availability; absence is never represented as numeric zero."""
+
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceRef:
+    """One stable, namespaced reference to normalized source evidence."""
+
+    id: str
+    source_id: str
+    occurred_at: datetime | None
+    role: EvidenceRole
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizationWarning:
+    """Typed noncanonical evidence that was retained without being guessed."""
+
+    code: str
+    evidence_id: str
+    schema: str | None
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class BoardCard:
+    """One graph chunk joined to its exact opaque Hermes task."""
+
+    chunk_id: str
+    task_id: str
+    idempotency_key: str
+    status: str
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    native_block_kind: str | None
+    evidence_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class BoardLink:
+    """One Hermes parent link whose endpoints both map to graph chunks."""
+
+    parent_chunk_id: str
+    child_chunk_id: str
+    parent_task_id: str
+    child_task_id: str
+    evidence_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedRun:
+    """One mapped run with UTC timestamps and its declared metadata schema."""
+
+    id: int
+    chunk_id: str
+    task_id: str
+    profile: str | None
+    step_key: str | None
+    status: str
+    outcome: str | None
+    started_at: datetime
+    ended_at: datetime | None
+    metadata_schema: str | None
+    evidence_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedEvent:
+    """One mapped lifecycle event with a UTC occurrence timestamp."""
+
+    id: int
+    chunk_id: str
+    task_id: str
+    run_id: int | None
+    kind: str
+    occurred_at: datetime
+    evidence_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedComment:
+    """One mapped comment classified only by its exact author."""
+
+    id: int
+    chunk_id: str
+    task_id: str
+    author: str
+    actor_class: ActorClass
+    occurred_at: datetime
+    evidence_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class JudgeScores:
+    """The three independent finite Decimal judge dimensions."""
+
+    spec_fidelity: Decimal
+    scenario_integrity: Decimal
+    architectural_conformance: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class JudgeVerdict:
+    """One canonical judge verdict sourced from a finished mapped run."""
+
+    id: str
+    chunk_id: str
+    task_id: str
+    run_id: int
+    outcome: JudgeOutcome
+    scores: JudgeScores
+    occurred_at: datetime
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkHandoff:
+    """One structurally valid ``forge.chunk.v1`` envelope."""
+
+    id: str
+    chunk_id: str
+    task_id: str
+    run_id: int
+    pr: str
+    occurred_at: datetime | None
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BlockOccurrence:
+    """One deduplicated block occurrence retaining all underlying evidence."""
+
+    id: str
+    chunk_id: str
+    task_id: str
+    run_id: int | None
+    reason_class: str | None
+    native_kinds: tuple[str, ...]
+    occurred_at: datetime
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSnapshot:
+    """Immutable canonical input to the pure lifecycle metrics engine."""
+
+    request: "ReportRequest"
+    graph_fingerprint: SourceFingerprint
+    hermes_fingerprint: SourceFingerprint
+    hermes_source_files: tuple[SourceFileFingerprint, ...]
+    chunks: tuple[GraphChunk, ...]
+    edges: tuple[GraphEdge, ...]
+    cards: tuple[BoardCard, ...]
+    links: tuple[BoardLink, ...]
+    runs: tuple[NormalizedRun, ...]
+    events: tuple[NormalizedEvent, ...]
+    comments: tuple[NormalizedComment, ...]
+    verdicts: tuple[JudgeVerdict, ...]
+    blocks: tuple[BlockOccurrence, ...]
+    handoffs: tuple[ChunkHandoff, ...]
+    warnings: tuple[NormalizationWarning, ...]
+    evidence: tuple[EvidenceRef, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class VerdictContribution:
+    """One in-period canonical verdict contributing to a finding."""
+
+    evidence_id: str
+    chunk_id: str
+    outcome: JudgeOutcome
+    occurred_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class BounceFinding:
+    """Unique bounced/completed chunks plus complete verdict coverage."""
+
+    status: Availability
+    numerator: int
+    denominator: int
+    rate: Decimal | None
+    completed_chunk_ids: tuple[str, ...]
+    bounced_chunk_ids: tuple[str, ...]
+    verdicts: tuple[VerdictContribution, ...]
+    completed_without_canonical_verdict: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreContribution:
+    """One raw judge score with its stable verdict evidence."""
+
+    evidence_id: str
+    chunk_id: str
+    occurred_at: datetime
+    score: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreFinding:
+    """One independently calculated quality dimension."""
+
+    name: str
+    status: Availability
+    total: Decimal
+    count: int
+    mean: Decimal | None
+    scores: tuple[ScoreContribution, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class QualityFinding:
+    """The three independent canonical judge quality findings."""
+
+    spec_fidelity: ScoreFinding
+    scenario_integrity: ScoreFinding
+    architectural_conformance: ScoreFinding
+
+
+@dataclass(frozen=True, slots=True)
+class BlockReasonFinding:
+    """One exact canonical reason-class bucket."""
+
+    reason_class: str
+    count: int
+    occurrence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BlockFinding:
+    """Canonical reason distribution and explicit unclassified occurrences."""
+
+    total: int
+    reasons: tuple[BlockReasonFinding, ...]
+    unclassified: tuple[BlockOccurrence, ...]
+    occurrences: tuple[BlockOccurrence, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CommentFinding:
+    """One in-period comment with actor and causal disposition."""
+
+    evidence_id: str
+    chunk_id: str
+    author: str
+    actor_class: ActorClass
+    occurred_at: datetime
+    disposition: str
+
+
+@dataclass(frozen=True, slots=True)
+class NeededIntervention:
+    """One block-comment-next-claim chain, unique by chunk in the result."""
+
+    chunk_id: str
+    block_id: str
+    comment_id: str
+    next_claim_id: str
+    block_at: datetime
+    comment_at: datetime
+    next_claim_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class CausalIndeterminate:
+    """Equal timestamps that cannot honestly establish a causal order."""
+
+    chunk_id: str
+    relation: str
+    occurred_at: datetime
+    evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class InterventionFinding:
+    """Operator-comment counts, actor distinctions, chains, and timestamp ties."""
+
+    qualifying_comment_count: int
+    qualifying_comments: tuple[CommentFinding, ...]
+    comments: tuple[CommentFinding, ...]
+    needed_to_execute_chunk_count: int
+    needed_to_execute: tuple[NeededIntervention, ...]
+    indeterminate: tuple[CausalIndeterminate, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleMetrics:
+    """Pure CHUNK-3 result model consumed by later report construction."""
+
+    bounce: BounceFinding
+    quality: QualityFinding
+    blocks: BlockFinding
+    intervention: InterventionFinding
 
 
 @dataclass(frozen=True, slots=True)
