@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from forgeboard_report.errors import InvalidCoreError, UsageError
 
@@ -209,10 +210,10 @@ class BoardCard:
 
 @dataclass(frozen=True, slots=True)
 class BoardLink:
-    """One Hermes parent link whose endpoints both map to graph chunks."""
+    """One Hermes parent link, retaining endpoints outside the graph too."""
 
-    parent_chunk_id: str
-    child_chunk_id: str
+    parent_chunk_id: str | None
+    child_chunk_id: str | None
     parent_task_id: str
     child_task_id: str
     evidence_id: str
@@ -295,6 +296,133 @@ class ChunkHandoff:
     pr: str
     occurred_at: datetime | None
     evidence_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PullRequestRef:
+    """A canonical pull-request location derived from a chunk handoff."""
+
+    host: str
+    owner: str
+    repository: str
+    number: int
+    url: str
+
+    @classmethod
+    def parse(cls, value: str) -> "PullRequestRef":
+        """Parse the one permitted HTTPS pull-request URL shape."""
+        if value != value.strip() or any(character.isspace() for character in value):
+            raise ValueError("URL must not contain whitespace")
+        try:
+            parsed = urlsplit(value)
+        except ValueError as error:
+            raise ValueError("URL is malformed") from error
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.netloc != parsed.hostname
+            or parsed.query
+            or parsed.fragment
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise ValueError("URL must be an HTTPS URL without query, fragment, or credentials")
+        parts = parsed.path.split("/")
+        if len(parts) != 5 or parts[0] or not all(parts[index] for index in (1, 2, 4)):
+            raise ValueError("URL must name one owner, repository, and pull request")
+        owner, repository, pull, number_text = parts[1:]
+        if pull != "pull" or not number_text.isascii() or not number_text.isdecimal():
+            raise ValueError("URL must end in /pull/<positive-int>")
+        number = int(number_text)
+        if number <= 0:
+            raise ValueError("pull-request number must be positive")
+        return cls(
+            host=parsed.hostname,
+            owner=owner,
+            repository=repository,
+            number=number,
+            url=value,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PullRequestFact:
+    """Verified read-only GitHub state for one canonical pull request."""
+
+    node_id: str
+    host: str
+    owner: str
+    repository: str
+    number: int
+    url: str
+    state: str
+    merged_at: datetime | None
+    evidence_id: str
+
+    @property
+    def ref(self) -> PullRequestRef:
+        """Return the canonical reference represented by this fact."""
+        return PullRequestRef(self.host, self.owner, self.repository, self.number, self.url)
+
+
+@dataclass(frozen=True, slots=True)
+class DependencyRunFinding:
+    """One in-period child start compared with its parent's merge gate."""
+
+    run_id: str
+    started_at: datetime
+    classification: str
+
+
+@dataclass(frozen=True, slots=True)
+class DependencyWaitFinding:
+    """One child-scoped prerequisite wait and its strictly later retry evidence."""
+
+    wait_id: str | None
+    wait_at: datetime | None
+    status: str
+    retry_run_id: str | None
+    retry_started_at: datetime | None
+    operator_comment_id: str | None
+    operator_comment_at: datetime | None
+    intervention: str
+
+
+@dataclass(frozen=True, slots=True)
+class DependencyEdgeFinding:
+    """Complete structural, gate, and causal audit for one declared edge."""
+
+    parent_id: str
+    child_id: str
+    attachment: str
+    link_evidence_ids: tuple[str, ...]
+    handoff_id: str
+    handoff_at: datetime
+    pull_request_id: str
+    pull_request_url: str
+    merged_at: datetime | None
+    observation: str
+    runs: tuple[DependencyRunFinding, ...]
+    waits: tuple[DependencyWaitFinding, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class UnexpectedBoardLinkFinding:
+    """One captured board link with no matching declared graph edge."""
+
+    parent_chunk_id: str | None
+    child_chunk_id: str | None
+    parent_task_id: str
+    child_task_id: str
+    evidence_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DependencyAudit:
+    """Pure CHUNK-4 findings, including every declared and unexpected edge."""
+
+    edges: tuple[DependencyEdgeFinding, ...]
+    unexpected_links: tuple[UnexpectedBoardLinkFinding, ...]
 
 
 @dataclass(frozen=True, slots=True)
