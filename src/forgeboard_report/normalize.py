@@ -751,20 +751,21 @@ def _decode_judge(
     evidence_id: str,
     expected_chunk_id: str | None,
 ) -> _DecodedJudge:
+    required_keys = {
+        "schema",
+        "chunk_id",
+        "pr",
+        "verdict",
+        "scores",
+        "findings",
+        "nits_as_cards",
+        "spot_check_suggestion",
+        "judge_model",
+        "tokens_estimate",
+    }
     _require_keys(
         value,
-        {
-            "schema",
-            "chunk_id",
-            "pr",
-            "verdict",
-            "scores",
-            "findings",
-            "nits_as_cards",
-            "spot_check_suggestion",
-            "judge_model",
-            "tokens_estimate",
-        },
+        required_keys,
         evidence_id,
         _JUDGE_SCHEMA,
     )
@@ -790,13 +791,114 @@ def _decode_judge(
             evidence_id,
             "forge.judge.v1 verdict must be exactly 'approve', 'approve-with-nits', or 'bounce'",
         )
+    pr = value["pr"]
+    if not isinstance(pr, str) or not _is_complete_url(pr):
+        raise InvalidSchemaError(
+            evidence_id,
+            "forge.judge.v1 pr must be one complete URL",
+        )
+    findings = value["findings"]
+    if not isinstance(findings, list):
+        raise InvalidSchemaError(evidence_id, "forge.judge.v1 findings must be a list")
+    finding_keys = {"dimension", "severity", "evidence", "action"}
+    finding_dimensions = {
+        "spec_fidelity",
+        "scenario_integrity",
+        "architectural_conformance",
+        "scope_discipline",
+        "debt_honesty",
+        "doc_reconciliation",
+        "ci-red",
+    }
+    finding_severities = {"nit", "fix", "block"}
+    for index, finding in enumerate(findings):
+        label = f"forge.judge.v1 findings[{index}]"
+        if not isinstance(finding, dict):
+            raise InvalidSchemaError(evidence_id, f"{label} must be an object")
+        _require_keys(finding, finding_keys, evidence_id, label)
+        if (
+            not isinstance(finding["dimension"], str)
+            or finding["dimension"] not in finding_dimensions
+        ):
+            raise InvalidSchemaError(
+                evidence_id,
+                f"{label} dimension must be one of {sorted(finding_dimensions)}",
+            )
+        if (
+            not isinstance(finding["severity"], str)
+            or finding["severity"] not in finding_severities
+        ):
+            raise InvalidSchemaError(
+                evidence_id,
+                f"{label} severity must be one of {sorted(finding_severities)}",
+            )
+        if not isinstance(finding["evidence"], str) or not finding["evidence"]:
+            raise InvalidSchemaError(
+                evidence_id,
+                f"{label} evidence must be a nonempty string",
+            )
+        if not isinstance(finding["action"], str) or not finding["action"]:
+            raise InvalidSchemaError(
+                evidence_id,
+                f"{label} action must be a nonempty string",
+            )
+        for key in finding:
+            if key not in finding_keys:
+                raise InvalidSchemaError(
+                    evidence_id,
+                    f"{label} has unknown key {key!r}",
+                )
+    nits_as_cards = value["nits_as_cards"]
+    if not isinstance(nits_as_cards, list):
+        raise InvalidSchemaError(
+            evidence_id,
+            "forge.judge.v1 nits_as_cards must be a list",
+        )
+    for index, item in enumerate(nits_as_cards):
+        if not isinstance(item, str):
+            raise InvalidSchemaError(
+                evidence_id,
+                f"forge.judge.v1 nits_as_cards[{index}] must be a string",
+            )
+    if not isinstance(value["spot_check_suggestion"], str):
+        raise InvalidSchemaError(
+            evidence_id,
+            "forge.judge.v1 spot_check_suggestion must be a string",
+        )
+    if not isinstance(value["judge_model"], str):
+        raise InvalidSchemaError(
+            evidence_id,
+            "forge.judge.v1 judge_model must be a string",
+        )
+    tokens_estimate = value["tokens_estimate"]
+    if (
+        not isinstance(tokens_estimate, Decimal)
+        or tokens_estimate != tokens_estimate.to_integral_value()
+        or tokens_estimate < 0
+    ):
+        raise InvalidSchemaError(
+            evidence_id,
+            "forge.judge.v1 tokens_estimate must be a nonnegative integer",
+        )
     scores = value["scores"]
     if not isinstance(scores, dict):
         raise InvalidSchemaError(evidence_id, "forge.judge.v1 scores must be an object")
     _require_keys(scores, set(_SCORE_NAMES), evidence_id, "forge.judge.v1 scores")
+    for key in scores:
+        if key not in _SCORE_NAMES:
+            raise InvalidSchemaError(
+                evidence_id,
+                f"forge.judge.v1 scores has unknown key {key!r}",
+            )
     decoded_scores = {
         name: _finite_decimal(scores[name], evidence_id, name) for name in _SCORE_NAMES
     }
+    for key in value:
+        if key not in required_keys:
+            raise InvalidSchemaError(
+                evidence_id,
+                f"forge.judge.v1 has unknown key {key!r}",
+            )
     return _DecodedJudge(
         chunk_id=chunk_id,
         outcome=outcome,
