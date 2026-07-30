@@ -4,7 +4,7 @@
 
 ## Execution contract
 
-- This is the smallest complete implementation slice: six unattended chunks, each bounded to at most six likely files and at most five BDD scenarios.
+- This is the smallest complete implementation slice: six unattended chunks, each bounded to at most six likely files and at most five BDD scenarios, except for documented contract-specific deviations such as CHUNK-3's eight-path judge remediation.
 - Every chunk uses the confirmed `forge-codex-lane` Hermes profile. No chunk requires unresolved human taste.
 - Forge ADR-0008's integration gate applies throughout: a child starts only after every declared parent PR is merged to `main`, branches from that resulting `main`, and never relies on a stacked or unmerged parent branch.
 - Each merge must leave `make check` green. A later chunk may extend a predecessor's types but may not weaken its Then-clauses or signed semantics.

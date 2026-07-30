@@ -10,3 +10,8 @@ Append-only running notes. Formats:
 2026-07-29 CHUNK-1: Graph decoding rejects duplicate object keys and nonstandard
 JSON constants as schema errors; accepted records are normalized independently
 from the SHA-256 fingerprint of their exact source bytes.
+
+2026-07-30 CHUNK-3: Judge-remediation validation and its canonical fixture
+coverage required eight implementation/test paths rather than the normal
+six-file execution bound; the CHUNK-3 contract and roadmap record this scoped
+exception.
