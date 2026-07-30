@@ -685,9 +685,6 @@ def _validate_operators(values: object) -> tuple[str, ...]:
             raise UsageError("operator", "identities must be nonempty strings")
         if operator != operator.strip():
             raise UsageError("operator", "identities must not have surrounding whitespace")
-        if any(character in operator for character in ("`", "\n", "\r")):
-            raise UsageError("operator", "identities must not contain Markdown control characters")
-
     if len(set(operators)) != len(operators):
         raise UsageError("operator", "duplicate identities are not allowed")
 
