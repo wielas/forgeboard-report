@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -26,6 +26,7 @@ from forgeboard_report.domain import (
     NormalizedComment,
     NormalizedEvent,
     NormalizedRun,
+    RawHermesCard,
     RawHermesEvent,
     RawHermesRun,
     RawHermesSnapshot,
@@ -41,6 +42,9 @@ _SCORE_NAMES = (
     "spec_fidelity",
     "scenario_integrity",
     "architectural_conformance",
+    "scope_discipline",
+    "debt_honesty",
+    "doc_reconciliation",
 )
 _TERMINAL_CARD_STATUSES = frozenset({"done", "archived"})
 
@@ -55,6 +59,7 @@ class _InvalidJsonConstant(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class _DecodedJudge:
+    chunk_id: str
     outcome: JudgeOutcome
     scores: JudgeScores
 
@@ -71,7 +76,7 @@ class _DecodedChunk:
 
 
 _DecodedMetadata = _DecodedJudge | _DecodedBlock | _DecodedChunk
-_Decoder = Callable[[dict[str, Any], str], _DecodedMetadata]
+_Decoder = Callable[[dict[str, Any], str, str | None], _DecodedMetadata]
 
 
 def normalize(
@@ -96,11 +101,16 @@ def normalize_sources(
             f"{request.board_slug!r}",
         )
 
+    cards_by_key: dict[str, list[RawHermesCard]] = {}
+    for card in raw_hermes.cards:
+        if card.idempotency_key is not None:
+            cards_by_key.setdefault(card.idempotency_key, []).append(card)
+
     chunk_by_task: dict[str, str] = {}
     card_rows = []
     for chunk in graph.chunks:
         bootstrap_key = chunk.bootstrap_key(raw_hermes.board_slug)
-        matches = tuple(card for card in raw_hermes.cards if card.idempotency_key == bootstrap_key)
+        matches = tuple(cards_by_key.get(bootstrap_key, ()))
         if len(matches) != 1:
             raise InvalidCoreError(
                 f"graph chunk {chunk.id!r}",
@@ -141,7 +151,11 @@ def normalize_sources(
     metadata_schema_by_run: dict[int, str | None] = {}
     for run in mapped_runs:
         evidence_id = _run_evidence_id(run.id)
-        schema, decoded, warning = _decode_metadata(run.metadata, evidence_id)
+        schema, decoded, warning = _decode_metadata(
+            run.metadata,
+            evidence_id,
+            chunk_by_task[run.task_id],
+        )
         metadata_schema_by_run[run.id] = schema
         if decoded is not None:
             decoded_by_run[run.id] = decoded
@@ -645,7 +659,15 @@ def _build_evidence(
             comment.occurred_at,
             contributing_ids,
         )
-    return tuple(sorted(refs.values(), key=lambda ref: ref.id))
+    return tuple(
+        sorted(
+            refs.values(),
+            key=lambda ref: (
+                ref.occurred_at or datetime.min.replace(tzinfo=UTC),
+                ref.id,
+            ),
+        )
+    )
 
 
 def _add_evidence(
@@ -668,6 +690,7 @@ def _add_evidence(
 def _decode_metadata(
     source_value: str | bytes | None,
     evidence_id: str,
+    expected_chunk_id: str | None = None,
 ) -> tuple[str | None, _DecodedMetadata | None, NormalizationWarning | None]:
     if source_value is None:
         return None, None, None
@@ -720,11 +743,43 @@ def _decode_metadata(
                 detail=f"unknown metadata schema {schema!r}",
             ),
         )
-    return schema, decoder(decoded, evidence_id), None
+    return schema, decoder(decoded, evidence_id, expected_chunk_id), None
 
 
-def _decode_judge(value: dict[str, Any], evidence_id: str) -> _DecodedJudge:
-    _require_keys(value, {"schema", "verdict", "scores"}, evidence_id, _JUDGE_SCHEMA)
+def _decode_judge(
+    value: dict[str, Any],
+    evidence_id: str,
+    expected_chunk_id: str | None,
+) -> _DecodedJudge:
+    _require_keys(
+        value,
+        {
+            "schema",
+            "chunk_id",
+            "pr",
+            "verdict",
+            "scores",
+            "findings",
+            "nits_as_cards",
+            "spot_check_suggestion",
+            "judge_model",
+            "tokens_estimate",
+        },
+        evidence_id,
+        _JUDGE_SCHEMA,
+    )
+    chunk_id = value["chunk_id"]
+    if not isinstance(chunk_id, str) or not chunk_id:
+        raise InvalidSchemaError(
+            evidence_id,
+            "forge.judge.v1 chunk_id must be a nonempty exact string",
+        )
+    if expected_chunk_id is not None and chunk_id != expected_chunk_id:
+        raise InvalidSchemaError(
+            evidence_id,
+            f"forge.judge.v1 chunk_id {chunk_id!r} does not match mapped chunk "
+            f"{expected_chunk_id!r}",
+        )
     verdict = value["verdict"]
     if verdict == "bounce":
         outcome = JudgeOutcome.BOUNCE
@@ -743,12 +798,21 @@ def _decode_judge(value: dict[str, Any], evidence_id: str) -> _DecodedJudge:
         name: _finite_decimal(scores[name], evidence_id, name) for name in _SCORE_NAMES
     }
     return _DecodedJudge(
+        chunk_id=chunk_id,
         outcome=outcome,
-        scores=JudgeScores(**decoded_scores),
+        scores=JudgeScores(
+            spec_fidelity=decoded_scores["spec_fidelity"],
+            scenario_integrity=decoded_scores["scenario_integrity"],
+            architectural_conformance=decoded_scores["architectural_conformance"],
+        ),
     )
 
 
-def _decode_block(value: dict[str, Any], evidence_id: str) -> _DecodedBlock:
+def _decode_block(
+    value: dict[str, Any],
+    evidence_id: str,
+    _expected_chunk_id: str | None,
+) -> _DecodedBlock:
     _require_keys(value, {"schema", "reason_class"}, evidence_id, _BLOCK_SCHEMA)
     reason_class = value["reason_class"]
     if not isinstance(reason_class, str) or not reason_class:
@@ -759,7 +823,11 @@ def _decode_block(value: dict[str, Any], evidence_id: str) -> _DecodedBlock:
     return _DecodedBlock(reason_class=reason_class)
 
 
-def _decode_chunk(value: dict[str, Any], evidence_id: str) -> _DecodedChunk:
+def _decode_chunk(
+    value: dict[str, Any],
+    evidence_id: str,
+    _expected_chunk_id: str | None,
+) -> _DecodedChunk:
     _require_keys(value, {"schema", "chunk_id", "pr"}, evidence_id, _CHUNK_SCHEMA)
     chunk_id = value["chunk_id"]
     pr = value["pr"]
@@ -796,34 +864,27 @@ def _require_keys(
 
 
 def _finite_decimal(value: Any, evidence_id: str, name: str) -> Decimal:
-    if isinstance(value, bool) or not isinstance(value, (Decimal, str)):
+    if isinstance(value, bool) or not isinstance(value, Decimal):
         raise InvalidSchemaError(
             evidence_id,
-            f"forge.judge.v1 score {name!r} must be a finite Decimal",
+            f"forge.judge.v1 score {name!r} must be an integer",
         )
-    if isinstance(value, str) and (not value or value != value.strip()):
+    if not value.is_finite():
         raise InvalidSchemaError(
             evidence_id,
-            f"forge.judge.v1 score {name!r} must be a finite Decimal",
+            f"forge.judge.v1 score {name!r} must be a finite integer",
         )
-    try:
-        result = value if isinstance(value, Decimal) else Decimal(value)
-    except InvalidOperation as error:
+    if value != value.to_integral_value():
         raise InvalidSchemaError(
             evidence_id,
-            f"forge.judge.v1 score {name!r} must be a finite Decimal",
-        ) from error
-    if not result.is_finite():
-        raise InvalidSchemaError(
-            evidence_id,
-            f"forge.judge.v1 score {name!r} must be a finite Decimal",
+            f"forge.judge.v1 score {name!r} must be an integer",
         )
-    if not Decimal(0) <= result <= Decimal(3):
+    if not Decimal(0) <= value <= Decimal(3):
         raise InvalidSchemaError(
             evidence_id,
             f"forge.judge.v1 score {name!r} must be in 0-3 range",
         )
-    return result
+    return value
 
 
 def _decode_json(value: str | bytes) -> Any:
