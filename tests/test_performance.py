@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -67,7 +68,11 @@ def test_modeled_live_under_thirty_seconds(tmp_path: Path) -> None:
                 index + 1,
                 chunk_id,
                 ended_at=at(20),
-                metadata=chunk_metadata(chunk_id) if index < len(chunk_ids) - 1 else None,
+                metadata=(
+                    chunk_metadata(chunk_id, f"https://github.com/acme/repo/pull/{index + 1}")
+                    if index < len(chunk_ids) - 1
+                    else None
+                ),
             )
             for index, chunk_id in enumerate(chunk_ids)
         ),
@@ -77,6 +82,7 @@ def test_modeled_live_under_thirty_seconds(tmp_path: Path) -> None:
         ),
     )
     clock = _ModeledClock()
+    graphql_batches: list[tuple[int, ...]] = []
 
     def runner(arguments, **_kwargs):
         clock.advance(5)
@@ -84,17 +90,23 @@ def test_modeled_live_under_thirty_seconds(tmp_path: Path) -> None:
         if args == ("gh", "--version"):
             return subprocess.CompletedProcess(args, 0, "gh version 2.96.0\n", "")
         assert args[:3] == ("gh", "api", "graphql") and "mutation" not in args[-1].lower()
+        aliases = tuple(
+            (int(alias), int(number))
+            for alias, number in re.findall(r"pr(\d+).*?pullRequest\(number: (\d+)\)", args[-1])
+        )
+        graphql_batches.append(tuple(number for _alias, number in aliases))
         data = {
             "data": {
-                "pr0": {
+                f"pr{alias}": {
                     "pullRequest": {
-                        "id": "NODE-1",
-                        "url": "https://github.com/acme/repo/pull/1",
-                        "number": 1,
+                        "id": f"NODE-{number}",
+                        "url": f"https://github.com/acme/repo/pull/{number}",
+                        "number": number,
                         "state": "MERGED",
                         "mergedAt": at(20).isoformat(),
                     }
                 }
+                for alias, number in aliases
             }
         }
         return subprocess.CompletedProcess(args, 0, json.dumps(data), "")
@@ -117,6 +129,7 @@ def test_modeled_live_under_thirty_seconds(tmp_path: Path) -> None:
         runner=runner,
         snapshotter=lambda *_args: raw,
     )
+    assert graphql_batches == [tuple(range(1, 51)), tuple(range(51, 100))]
     assert clock.value < 30
     assert sorted(path.name for path in (tmp_path / "report").iterdir()) == [
         "report.json",
