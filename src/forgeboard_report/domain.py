@@ -593,6 +593,40 @@ class LifecycleMetrics:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedInputs:
+    """The report-relevant, non-volatile subset of an operator request."""
+
+    board_slug: str
+    from_original: str
+    to_original: str
+    from_utc: datetime
+    to_utc: datetime
+    operator_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReportSources:
+    """Fingerprints of the accepted source snapshot, excluding local paths."""
+
+    graph: SourceFingerprint
+    hermes: SourceFingerprint
+    hermes_files: tuple[SourceFileFingerprint, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Report:
+    """The one immutable v1 model shared by the JSON and Markdown projections."""
+
+    schema_version: str
+    inputs: ResolvedInputs
+    sources: ReportSources
+    metrics: LifecycleMetrics
+    dependency_audit: DependencyAudit
+    warnings: tuple[NormalizationWarning, ...]
+    evidence: tuple[EvidenceRef, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ReportRequest:
     """Validated and resolved operator inputs for one report."""
 
