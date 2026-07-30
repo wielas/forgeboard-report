@@ -196,7 +196,7 @@ def assert_waits(dependency_case) -> None:
         ("unclassified", "not_observed"),
         ("observed", "indeterminate"),
     ]
-    assert waits[0].retry_run_id == "hermes:run:16"
+    assert waits[0].retry_run_id == "hermes:run:17"
     assert waits[0].operator_comment_id is None
     assert waits[2].retry_run_id == "hermes:run:17"
     assert waits[2].operator_comment_id == "hermes:comment:1"
