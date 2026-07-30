@@ -29,7 +29,27 @@ from forgeboard_report.github import fetch_pull_request_facts
 scenarios("../features/dependency_audit.feature")
 
 
-def _dependency_snapshot():
+def _dependency_snapshot(*, include_wait_boundaries: bool = True):
+    boundary_runs = (
+        (
+            run(16, "C", started_at=at(26), ended_at=at(27)),
+            run(17, "C", started_at=at(28), ended_at=at(29)),
+            run(
+                18,
+                "C",
+                status="blocked",
+                outcome="blocked",
+                ended_at=at(27),
+                metadata=block_metadata("failing-prereq"),
+            ),
+        )
+        if include_wait_boundaries
+        else ()
+    )
+    boundary_events = (
+        (event(18, "C", "blocked", at(27), run_id=18),) if include_wait_boundaries else ()
+    )
+    boundary_comments = (comment(2, "C", "operator", at(30)),) if include_wait_boundaries else ()
     return normalize_fixture(
         ("P", "Q", "C", "D"),
         cards=(
@@ -67,14 +87,16 @@ def _dependency_snapshot():
                 metadata='{"schema":"future.block.v2"}',
             ),
             run(15, "C", started_at=at(30), ended_at=at(31)),
+            *boundary_runs,
         ),
         events=(
             event(1, "P", "completed", at(10), run_id=1),
             event(2, "Q", "completed", at(12), run_id=2),
             event(13, "C", "blocked", at(26), run_id=13),
             event(14, "C", "blocked", at(27), run_id=14),
+            *boundary_events,
         ),
-        comments=(comment(1, "C", "operator", at(28)),),
+        comments=(comment(1, "C", "operator", at(28)), *boundary_comments),
         links=(
             RawHermesLink("task-P", "task-C"),
             RawHermesLink("task-C", "task-P"),
@@ -98,8 +120,8 @@ def _fact(ref: PullRequestRef, merged_at: datetime | None) -> PullRequestFact:
     )
 
 
-def _audit_case():
-    snapshot = _dependency_snapshot()
+def _audit_case(*, include_wait_boundaries: bool = True):
+    snapshot = _dependency_snapshot(include_wait_boundaries=include_wait_boundaries)
     refs = required_pull_request_refs(snapshot)
     facts = tuple(_fact(ref, at(20) if ref.number == 1 else None) for ref in refs)
     return {"snapshot": snapshot, "facts": facts, "audit": None}
@@ -126,7 +148,7 @@ def gate_case():
     target_fixture="dependency_case",
 )
 def wait_case():
-    return _audit_case()
+    return _audit_case(include_wait_boundaries=True)
 
 
 @when("dependency edges are audited")
@@ -159,6 +181,8 @@ def assert_gate_classifications(dependency_case) -> None:
         "indeterminate",
         "after_merge",
         "after_merge",
+        "after_merge",
+        "after_merge",
     ]
     assert {run.classification for run in edges[("Q", "C")].runs} == {"parent_unmerged"}
     assert edges[("P", "D")].observation == "not_observed"
@@ -168,11 +192,24 @@ def assert_gate_classifications(dependency_case) -> None:
 def assert_waits(dependency_case) -> None:
     waits = dependency_case["audit"].edges[0].waits
     assert [(wait.status, wait.intervention) for wait in waits] == [
+        ("observed", "indeterminate"),
+        ("unclassified", "not_observed"),
+        ("observed", "indeterminate"),
+    ]
+    assert waits[0].retry_run_id == "hermes:run:16"
+    assert waits[0].operator_comment_id is None
+    assert waits[2].retry_run_id == "hermes:run:17"
+    assert waits[2].operator_comment_id == "hermes:comment:1"
+
+    strict_case = _audit_case(include_wait_boundaries=False)
+    strict_audit = audit_dependencies(strict_case["snapshot"], strict_case["facts"])
+    strict_waits = strict_audit.edges[0].waits
+    assert [(wait.status, wait.intervention) for wait in strict_waits] == [
         ("observed", "before_retry"),
         ("unclassified", "not_observed"),
     ]
-    assert waits[0].retry_run_id == "hermes:run:15"
-    assert waits[0].operator_comment_id == "hermes:comment:1"
+    assert strict_waits[0].retry_run_id == "hermes:run:15"
+    assert strict_waits[0].operator_comment_id == "hermes:comment:1"
     edges = {(edge.parent_id, edge.child_id): edge for edge in dependency_case["audit"].edges}
     assert edges[("P", "D")].waits[0].status == "not_observed"
 
@@ -275,6 +312,14 @@ def fail_closed(failure_case) -> None:
         )
     failure_case["errors"].append(timeout.value)
 
+    def oversized_runner(args, **kwargs):
+        output = "gh version 2.96.0\n" if args[1] == "--version" else "x" * 65537
+        return subprocess.CompletedProcess(args, 0, output, "")
+
+    with pytest.raises(SourceUnavailableError) as oversized_output:
+        fetch_pull_request_facts((ref,), runner=oversized_runner)
+    failure_case["errors"].append(oversized_output.value)
+
     def malformed_runner(args, **kwargs):
         output = "gh version 2.96.0\n" if args[1] == "--version" else "not JSON"
         return subprocess.CompletedProcess(args, 0, output, "")
@@ -317,9 +362,10 @@ def assert_failures(failure_case) -> None:
     assert "requires gh 2.96" in str(failure_case["errors"][0])
     assert "unavailable" in str(failure_case["errors"][1])
     assert "timed out" in str(failure_case["errors"][2])
-    assert "malformed GraphQL JSON" in str(failure_case["errors"][3])
-    assert "missing or inaccessible" in str(failure_case["errors"][4])
-    assert "required GitHub PR evidence is missing" in str(failure_case["errors"][5])
-    assert "contradictory duplicate PR facts" in str(failure_case["errors"][6])
-    assert "handoff is missing" in str(failure_case["errors"][7])
-    assert "handoff is multiple" in str(failure_case["errors"][8])
+    assert "output exceeded 65536 bytes" in str(failure_case["errors"][3])
+    assert "malformed GraphQL JSON" in str(failure_case["errors"][4])
+    assert "missing or inaccessible" in str(failure_case["errors"][5])
+    assert "required GitHub PR evidence is missing" in str(failure_case["errors"][6])
+    assert "contradictory duplicate PR facts" in str(failure_case["errors"][7])
+    assert "handoff is missing" in str(failure_case["errors"][8])
+    assert "handoff is multiple" in str(failure_case["errors"][9])
