@@ -47,6 +47,23 @@ def _judge_metadata_without(*keys: str) -> str:
     return json.dumps(metadata)
 
 
+def _judge_finding_with(**overrides: object) -> dict[str, object]:
+    finding: dict[str, object] = {
+        "dimension": "spec_fidelity",
+        "severity": "fix",
+        "evidence": "src/forgeboard_report/normalize.py: judge validation",
+        "action": "Correct the judge envelope.",
+    }
+    finding.update(overrides)
+    return finding
+
+
+def _judge_scores_with(**overrides: object) -> dict[str, object]:
+    scores = json.loads(judge_metadata())["scores"]
+    scores.update(overrides)
+    return scores
+
+
 def test_normalized_snapshot_and_metric_results_are_frozen_and_stably_sorted() -> None:
     snapshot = normalize_fixture(
         ("B", "A"),
@@ -191,6 +208,94 @@ def test_timestamp_inputs_normalize_to_utc_and_block_run_end_is_fallback() -> No
         (
             _judge_metadata_with(scores=[]),
             "scores must be an object",
+        ),
+        (
+            _judge_metadata_with(pr="/relative/path"),
+            "complete URL",
+        ),
+        (
+            _judge_metadata_with(pr="not-a-url"),
+            "complete URL",
+        ),
+        (
+            _judge_metadata_with(findings="not-a-list"),
+            "must be a list",
+        ),
+        (
+            _judge_metadata_with(findings=None),
+            "must be a list",
+        ),
+        (
+            _judge_metadata_with(findings=[None]),
+            "must be an object",
+        ),
+        (
+            _judge_metadata_with(findings=[{"dimension": "spec_fidelity"}]),
+            "missing keys",
+        ),
+        (
+            _judge_metadata_with(findings=[_judge_finding_with(dimension="unknown_dim")]),
+            "must be one of",
+        ),
+        (
+            _judge_metadata_with(findings=[_judge_finding_with(severity="critical")]),
+            "must be one of",
+        ),
+        (
+            _judge_metadata_with(findings=[_judge_finding_with(evidence="")]),
+            "nonempty string",
+        ),
+        (
+            _judge_metadata_with(findings=[_judge_finding_with(evidence=42)]),
+            "nonempty string",
+        ),
+        (
+            _judge_metadata_with(findings=[_judge_finding_with(action="")]),
+            "nonempty string",
+        ),
+        (
+            _judge_metadata_with(findings=[_judge_finding_with(action=42)]),
+            "nonempty string",
+        ),
+        (
+            _judge_metadata_with(nits_as_cards="not-a-list"),
+            "must be a list",
+        ),
+        (
+            _judge_metadata_with(nits_as_cards=[42]),
+            "must be a string",
+        ),
+        (
+            _judge_metadata_with(spot_check_suggestion=42),
+            "must be a string",
+        ),
+        (
+            _judge_metadata_with(judge_model=42),
+            "must be a string",
+        ),
+        (
+            _judge_metadata_with(tokens_estimate=-1),
+            "nonnegative integer",
+        ),
+        (
+            _judge_metadata_with(tokens_estimate=1.5),
+            "nonnegative integer",
+        ),
+        (
+            _judge_metadata_with(tokens_estimate="string"),
+            "nonnegative integer",
+        ),
+        (
+            _judge_metadata_with(unknown_example="rejected"),
+            "unknown",
+        ),
+        (
+            _judge_metadata_with(scores=_judge_scores_with(unknown_score=1)),
+            "unknown",
+        ),
+        (
+            _judge_metadata_with(findings=[_judge_finding_with(unknown_field="x")]),
+            "unknown",
         ),
         ('{"schema":"forge.block.v1","reason_class":""}', "nonempty exact string"),
         (
@@ -358,7 +463,6 @@ def test_full_rubric_judge_envelope_decodes_report_dimensions() -> None:
             "spot_check_suggestion": "Inspect normalize.py decoder dispatch.",
             "judge_model": "fixture-judge",
             "tokens_estimate": 1234,
-            "unknown_example": "accepted",
         }
     )
 
