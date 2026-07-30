@@ -27,7 +27,10 @@ from forgeboard_report.domain import (
     DependencyRunFinding,
     DependencyWaitFinding,
     NormalizationWarning,
+    ReportRequest,
     ScoreFinding,
+    SourceFileFingerprint,
+    UnexpectedBoardLinkFinding,
 )
 from forgeboard_report.errors import (
     InvalidCoreError,
@@ -41,6 +44,7 @@ from forgeboard_report.publish import publish, publish_report
 from forgeboard_report.render import (
     RenderedReport,
     _ids,
+    _inline_code,
     _markdown_text,
     _metric_line,
     _reason_buckets,
@@ -52,10 +56,10 @@ from forgeboard_report.render import (
 )
 
 
-def _report():
+def _report(operator_ids: tuple[str, ...] = ("operator",)):
     snapshot = normalize_fixture(
-        ("A",),
-        cards=(card("A", completed_at=at(40)),),
+        ("A", "B"),
+        cards=(card("A", completed_at=at(40)), card("B", completed_at=at(41))),
         runs=(
             run(
                 1,
@@ -74,6 +78,7 @@ def _report():
         ),
         events=(event(1, "A", "claimed", at(10)), event(2, "A", "blocked", at(21), run_id=2)),
         comments=(comment(1, "A", "operator", at(15)),),
+        operator_ids=operator_ids,
     )
     audit = DependencyAudit(
         edges=(
@@ -103,11 +108,26 @@ def _report():
                 ),
             ),
         ),
-        unexpected_links=(),
+        unexpected_links=(
+            UnexpectedBoardLinkFinding(
+                parent_chunk_id="unexpected-parent",
+                child_chunk_id=None,
+                parent_task_id="task:unexpected-parent",
+                child_task_id="task:unexpected-child",
+                evidence_id="hermes:link:unexpected",
+            ),
+        ),
     )
     report = build_report(snapshot, calculate(snapshot), audit)
     return replace(
         report,
+        sources=replace(
+            report.sources,
+            hermes_files=(
+                SourceFileFingerprint("cards.json", 37, "c" * 64),
+                SourceFileFingerprint("runs.json", 53, "d" * 64),
+            ),
+        ),
         warnings=(
             NormalizationWarning(
                 code="unknown_schema",
@@ -117,6 +137,34 @@ def _report():
             ),
         ),
     )
+
+
+def _json_leaf_values(value: object):
+    if isinstance(value, dict):
+        for nested in value.values():
+            yield from _json_leaf_values(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _json_leaf_values(nested)
+    else:
+        yield value
+
+
+def assert_all_json_leaf_values_in_markdown(json_bytes: bytes, markdown_bytes: bytes) -> None:
+    """Assert Markdown projects every JSON leaf with its Markdown-safe spelling."""
+    markdown = markdown_bytes.decode("utf-8")
+    for value in _json_leaf_values(json.loads(json_bytes)):
+        if value is None:
+            candidates = ("unavailable",)
+        elif isinstance(value, str):
+            candidates = (
+                value,
+                _inline_code(value),
+                _markdown_text(value),
+            )
+        else:
+            candidates = (json.dumps(value, ensure_ascii=False, separators=(",", ":")),)
+        assert any(candidate in markdown for candidate in candidates), value
 
 
 def test_rendered_projections_have_fixed_order_rounding_and_traceable_ids() -> None:
@@ -140,7 +188,7 @@ def test_rendered_projections_have_fixed_order_rounding_and_traceable_ids() -> N
         "operator_intervention",
     ]
     assert data["schema_version"] == "forgeboard.report.v1"
-    assert data["metrics"]["bounce_rate"]["value"] == 1
+    assert data["metrics"]["bounce_rate"]["value"] == 0.5
     assert data["metrics"]["judge_quality"]["spec_fidelity"]["value"] == 0
     assert data["dependency_audit"]["edges"][0]["handoff_id"] == "hermes:run:1"
     assert data["warnings"][0]["detail"] == "untrusted `text`\nkept as evidence"
@@ -162,6 +210,12 @@ def test_rendered_projections_have_fixed_order_rounding_and_traceable_ids() -> N
     )
     assert "hermes:run:1" in markdown
     assert "github:node:1" in markdown
+
+
+def test_markdown_projects_every_json_leaf_from_the_report_fixture() -> None:
+    rendered = render(_report())
+
+    assert_all_json_leaf_values_in_markdown(rendered.json, rendered.markdown)
 
 
 def test_display_rounds_half_even_once_and_unavailable_is_null() -> None:
@@ -213,7 +267,7 @@ def test_markdown_source_values_are_escaped_and_lf_normalized() -> None:
 
     assert _ids((source_value,)) == "`source\\`id next line`"
     assert _reason_buckets(({"reason_class": source_value, "count": 1},)) == (
-        "`source\\`id next line`: `1`"
+        "`source\\`id next line`: `1` (none)"
     )
     assert _status_value("available", source_value) == "`source\\`id next line`"
     assert (
@@ -233,6 +287,23 @@ def test_markdown_source_values_are_escaped_and_lf_normalized() -> None:
         json.loads(rendered.json)["warnings"][0]["detail"] == "untrusted `text`\nkept as evidence"
     )
     assert b"\r" not in rendered.markdown
+
+
+@pytest.mark.parametrize("operator", ("name`tag", "name\ntag", "name\rtag"))
+def test_operator_identity_markdown_is_safe_while_json_is_exact(operator: str) -> None:
+    request = ReportRequest(
+        board_slug="board",
+        graph_path=Path("graph.json"),
+        from_original="2026-01-01T00:00:00Z",
+        to_original="2026-01-02T00:00:00Z",
+        operator_ids=(operator,),
+        output_directory=Path("report"),
+    )
+    rendered = render(_report((operator,)))
+
+    assert request.operator_ids == (operator,)
+    assert json.loads(rendered.json)["inputs"]["operator_ids"] == [operator]
+    assert _inline_code(operator) in rendered.markdown.decode("utf-8")
 
 
 def test_publish_creates_only_the_complete_pair(tmp_path: Path) -> None:

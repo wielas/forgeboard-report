@@ -23,6 +23,12 @@ Feature: Canonical report output
     When its projections are rendered and published
     Then the source bytes and their fingerprint are preserved in the output projections
 
+  Scenario: Injected renderer failure leaves no report destination
+    Given a complete canonical report model
+    And an injected renderer failure
+    When the full report is rendered and published
+    Then the renderer failure is invalid core and no destination appears
+
   Scenario Outline: Publication failure leaves no plausible report
     Given a complete canonical report model
     And an injected <stage> publication failure

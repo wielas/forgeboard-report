@@ -15,13 +15,14 @@ from pytest_bdd import given, parsers, scenarios, then, when
 
 from forgeboard_report.domain import Availability, NormalizationWarning
 from forgeboard_report.errors import (
+    InvalidCoreError,
     PublicationFlushError,
     PublicationRenameError,
     PublicationWriteError,
 )
-from forgeboard_report.publish import publish
+from forgeboard_report.publish import publish, publish_report
 from forgeboard_report.render import render
-from test_render import _report
+from test_render import _report, assert_all_json_leaf_values_in_markdown
 
 scenarios("../features/report_output.feature")
 
@@ -74,20 +75,8 @@ def explicit_unavailable(report_case) -> None:
 
 @then("Markdown carries the matching projected JSON values and stable IDs")
 def matching_projected_values(report_case) -> None:
-    data = json.loads(report_case["rendered"].json)
-    markdown = report_case["rendered"].markdown.decode("utf-8")
-    projected_values = (
-        data["schema_version"],
-        data["inputs"]["board_slug"],
-        *data["inputs"]["operator_ids"],
-        *data["metrics"]["bounce_rate"]["completed_chunk_ids"],
-        *data["metrics"]["bounce_rate"]["bounced_chunk_ids"],
-        *(item["evidence_id"] for item in data["metrics"]["bounce_rate"]["verdicts"]),
-        *(item["id"] for item in data["metrics"]["blocked_work"]["occurrences"]),
-        *(item["evidence_id"] for item in data["warnings"]),
-        *(item["id"] for item in data["evidence"]),
-    )
-    assert all(value in markdown for value in projected_values)
+    rendered = report_case["rendered"]
+    assert_all_json_leaf_values_in_markdown(rendered.json, rendered.markdown)
 
 
 @when("its projections are rendered twice")
@@ -146,8 +135,13 @@ def deterministic_output(deterministic_cases) -> None:
         "sys.stdout.buffer.write(result.json + result.markdown)"
     )
     outputs = []
-    for hash_seed in ("1", "777"):
-        environment = os.environ | {"PYTHONHASHSEED": hash_seed, "TZ": "UTC0", "LC_ALL": "C"}
+    settings = (
+        {"PYTHONHASHSEED": "1", "TZ": "Pacific/Auckland", "LC_ALL": "en_NZ.UTF-8"},
+        {"PYTHONHASHSEED": "777", "TZ": "America/New_York", "LC_ALL": "C"},
+        {"PYTHONHASHSEED": "42", "TZ": "UTC0", "LC_ALL": "C"},
+    )
+    for setting in settings:
+        environment = os.environ | setting
         result = subprocess.run(
             [sys.executable, "-c", script],
             check=True,
@@ -155,7 +149,7 @@ def deterministic_output(deterministic_cases) -> None:
             env=environment,
         )
         outputs.append(result.stdout)
-    assert outputs[0] == outputs[1]
+    assert len(set(outputs)) == 1
 
 
 @given(
@@ -185,8 +179,37 @@ def source_byte_report(tmp_path: Path):
 
 @when("its projections are rendered and published")
 def render_and_publish(source_byte_case) -> None:
+    script = (
+        "import hashlib, sys; "
+        "from dataclasses import replace; "
+        "from pathlib import Path; "
+        "sys.path.insert(0, 'tests'); "
+        "from forgeboard_report.publish import publish_report; "
+        "from test_render import _report; "
+        "source_path = Path(sys.argv[1]); "
+        "source_bytes = source_path.read_bytes(); "
+        "digest = hashlib.sha256(source_bytes).hexdigest(); "
+        "report = _report(); "
+        "report = replace(report, sources=replace(report.sources, "
+        "graph=replace(report.sources.graph, sha256=digest))); "
+        "publish_report(Path(sys.argv[2]), report); "
+        "assert source_path.read_bytes() == source_bytes; "
+        "sys.stdout.write(digest)"
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(source_byte_case["source_path"]),
+            str(source_byte_case["destination"]),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     source_byte_case["rendered"] = render(source_byte_case["report"])
-    publish(source_byte_case["destination"], source_byte_case["rendered"])
+    source_byte_case["subprocess_digest"] = result.stdout
 
 
 @then("the source bytes and their fingerprint are preserved in the output projections")
@@ -194,6 +217,7 @@ def source_bytes_preserved(source_byte_case) -> None:
     source_bytes = source_byte_case["source_bytes"]
     digest = hashlib.sha256(source_bytes).hexdigest()
     assert source_byte_case["source_path"].read_bytes() == source_bytes
+    assert source_byte_case["subprocess_digest"] == digest
     assert json.loads(source_byte_case["rendered"].json)["sources"]["graph"]["sha256"] == digest
     assert digest in source_byte_case["rendered"].markdown.decode("utf-8")
 
@@ -244,3 +268,33 @@ def typed_failure_cleanup(stage: str, publication_case) -> None:
     assert publication_case["error"].stage == stage
     assert not publication_case["destination"].exists()
     assert not list(publication_case["destination"].parent.glob(".published.*"))
+
+
+@given("an injected renderer failure", target_fixture="renderer_failure_case")
+def renderer_failure(tmp_path: Path, report_case):
+    def broken_renderer(_report):
+        raise RuntimeError("broken renderer")
+
+    return {
+        "destination": tmp_path / "published",
+        "report": report_case["report"],
+        "renderer": broken_renderer,
+        "error": None,
+    }
+
+
+@when("the full report is rendered and published")
+def render_and_publish_with_failure(renderer_failure_case) -> None:
+    with pytest.raises(InvalidCoreError) as raised:
+        publish_report(
+            renderer_failure_case["destination"],
+            renderer_failure_case["report"],
+            renderer=renderer_failure_case["renderer"],
+        )
+    renderer_failure_case["error"] = raised.value
+
+
+@then("the renderer failure is invalid core and no destination appears")
+def renderer_failure_leaves_no_destination(renderer_failure_case) -> None:
+    assert "renderer failed" in str(renderer_failure_case["error"])
+    assert not renderer_failure_case["destination"].exists()
