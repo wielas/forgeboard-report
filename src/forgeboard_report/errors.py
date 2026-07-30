@@ -52,3 +52,24 @@ class PublicationError(RuntimeError):
         self.stage = stage
         self.detail = detail
         super().__init__(f"{stage}: {detail}")
+
+
+class PublicationWriteError(PublicationError):
+    """A staged report artifact could not be written completely."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__("write", detail)
+
+
+class PublicationFlushError(PublicationError):
+    """A staged report artifact could not be durably flushed."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__("flush", detail)
+
+
+class PublicationRenameError(PublicationError):
+    """The complete staging directory could not be made visible."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__("rename", detail)
