@@ -40,6 +40,11 @@ from forgeboard_report.metrics import calculate
 from forgeboard_report.publish import publish, publish_report
 from forgeboard_report.render import (
     RenderedReport,
+    _ids,
+    _markdown_text,
+    _metric_line,
+    _reason_buckets,
+    _status_value,
     build_report,
     render,
     render_json,
@@ -201,6 +206,33 @@ def test_rendering_is_stable_and_rejects_an_invalid_core_model() -> None:
     invalid = replace(report, schema_version="not-v1")
     with pytest.raises(InvalidCoreError, match="schema_version"):
         render_json(invalid)
+
+
+def test_markdown_source_values_are_escaped_and_lf_normalized() -> None:
+    source_value = "source`id\r\nnext\rline"
+
+    assert _ids((source_value,)) == "`source\\`id next line`"
+    assert _reason_buckets(({"reason_class": source_value, "count": 1},)) == (
+        "`source\\`id next line`: `1`"
+    )
+    assert _status_value("available", source_value) == "`source\\`id next line`"
+    assert (
+        _metric_line(
+            {"status": "available", "value": source_value, "numerator": 1, "denominator": 2},
+            "value",
+            "numerator",
+            "denominator",
+        )
+        == "- `source\\`id next line` (`1` / `2`)"
+    )
+    assert _markdown_text(source_value) == "source\\\\\\`id next line"
+
+    report = _report()
+    rendered = render(report)
+    assert (
+        json.loads(rendered.json)["warnings"][0]["detail"] == "untrusted `text`\nkept as evidence"
+    )
+    assert b"\r" not in rendered.markdown
 
 
 def test_publish_creates_only_the_complete_pair(tmp_path: Path) -> None:
