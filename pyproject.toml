@@ -5,6 +5,9 @@ description = "A Forge-managed project."
 requires-python = ">=3.12"
 dependencies = []
 
+[project.scripts]
+forgeboard-report = "forgeboard_report.cli:main"
+
 [dependency-groups]
 dev = [
     # lefthook is a dev DEPENDENCY, not an assumed global. Without it here,
